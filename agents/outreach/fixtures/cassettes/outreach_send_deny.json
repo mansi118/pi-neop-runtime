@@ -1,0 +1,18 @@
+{
+  "_comment": "Same plan as the grant case; the run differs only by the fixture's approvals=deny policy, which ends the run FAILED before send_email fires.",
+  "plan": {
+    "plan_version": "v1",
+    "tasks": [
+      {
+        "task_id": "t1",
+        "description": "send first-touch email to the top lead",
+        "depends_on": [],
+        "tool": "send_email",
+        "acceptance": "email sent to intended recipient",
+        "scope": "tool"
+      }
+    ],
+    "max_replans": 1
+  },
+  "verify": { "__default__": "pass" }
+}

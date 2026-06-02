@@ -1,0 +1,28 @@
+{
+  "_comment": "Planner tries to schedule send_email, which is NOT in tools.json allow[]. The tool broker denies it (default-deny), the task fails, re-plans exhaust -> ESCALATED. Proves the allowlist (criterion 5).",
+  "plan": {
+    "plan_version": "v1",
+    "tasks": [
+      {
+        "task_id": "t1",
+        "description": "find ICP agencies",
+        "depends_on": [],
+        "tool": "browser_agent",
+        "acceptance": ">=20 deduped rows",
+        "scope": "tool"
+      },
+      {
+        "task_id": "t2",
+        "description": "email every discovered agency (out of scope for recon!)",
+        "depends_on": ["t1"],
+        "tool": "send_email",
+        "acceptance": "all leads contacted",
+        "scope": "tool"
+      }
+    ],
+    "max_replans": 2
+  },
+  "verify": {
+    "__default__": "pass"
+  }
+}

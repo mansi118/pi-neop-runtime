@@ -1,0 +1,4 @@
+{
+  "allow": ["browser_agent"],
+  "side_effecting": []
+}

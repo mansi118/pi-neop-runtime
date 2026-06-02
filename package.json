@@ -1,0 +1,30 @@
+{
+  "name": "pi-neop-runtime",
+  "version": "0.1.0",
+  "description": "NEOS runtime + nrt Pi-agent test harness, built on the earendil-works/pi agent harness. Verify before trust, gate by gate.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "bin": {
+    "nrt": "./src/cli.ts"
+  },
+  "scripts": {
+    "nrt": "node src/cli.ts",
+    "test": "vitest run",
+    "validate": "node src/cli.ts validate agents/ --suite",
+    "suite": "node src/cli.ts suite agents/ --mode unit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.78.0",
+    "@earendil-works/pi-ai": "0.78.0",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "3.2.4"
+  },
+  "license": "MIT",
+  "author": "Mansi Gambhir <ml@synlex.tech>"
+}

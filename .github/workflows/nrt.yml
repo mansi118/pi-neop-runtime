@@ -1,0 +1,26 @@
+# CI gate (NE-TSD-RT-V1 §4.6): verify-before-trust for Pi-agents, on the pi harness.
+name: nrt
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit-gate:
+    name: validate + unit suite (deterministic, no spend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: validate all NEops
+        run: node src/cli.ts validate agents/ --suite
+      - name: unit suite (must be green)
+        run: node src/cli.ts suite agents/ --mode unit
+      - name: typecheck
+        run: npx tsc --noEmit
+      - name: vitest acceptance suite
+        run: npm test

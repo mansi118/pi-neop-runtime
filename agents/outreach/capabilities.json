@@ -1,0 +1,5 @@
+{
+  "publishes": ["contact_lead"],
+  "consumes": ["find_leads"],
+  "description": "First-touch outreach to qualified leads. Side-effecting; gated by approval."
+}

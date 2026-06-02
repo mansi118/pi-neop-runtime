@@ -1,0 +1,4 @@
+{
+  "browser_agent": { "__default__": { "rows": 1 } },
+  "send_email": { "__default__": { "sent": true, "recipient": "hello@webchutney.com" } }
+}

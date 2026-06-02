@@ -1,0 +1,26 @@
+{
+  "plan_version": "v1",
+  "plan_id": "plan_aeb662d11ff42fd2",
+  "neop": "recon",
+  "tasks": [
+    {
+      "task_id": "t1",
+      "description": "find 20 ICP marketing agencies in Delhi NCR",
+      "depends_on": [],
+      "tool": "browser_agent",
+      "acceptance": ">=20 deduped rows w/ name, domain, contact",
+      "scope": "tool"
+    },
+    {
+      "task_id": "t2",
+      "description": "enrich firmographics for discovered agencies",
+      "depends_on": [
+        "t1"
+      ],
+      "tool": "enrichment_mcp",
+      "acceptance": ">=80% rows enriched w/ provenance",
+      "scope": "tool"
+    }
+  ],
+  "max_replans": 2
+}

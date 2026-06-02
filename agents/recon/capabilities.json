@@ -1,0 +1,5 @@
+{
+  "publishes": ["find_leads", "enrich_account"],
+  "consumes": [],
+  "description": "ICP discovery + firmographic enrichment with provenance."
+}

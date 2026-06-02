@@ -1,0 +1,6 @@
+{
+  "nep_metrics": [
+    { "name": "approval_rate", "target": ">=0.9", "unit": "fraction" },
+    { "name": "reply_rate", "target": ">=0.15", "unit": "fraction" }
+  ]
+}

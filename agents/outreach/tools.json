@@ -1,0 +1,4 @@
+{
+  "allow": ["browser_agent", "send_email"],
+  "side_effecting": ["send_email"]
+}

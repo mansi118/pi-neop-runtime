@@ -1,0 +1,25 @@
+{
+  "_comment": "Mock tool bus. Keyed by tool -> args-hash -> result, with a per-tool __default__ fallback (§8 'Mock keying').",
+  "browser_agent": {
+    "__default__": {
+      "rows": 22,
+      "sample": [
+        {"name": "Webchutney", "domain": "webchutney.com", "contact": "hello@webchutney.com"},
+        {"name": "iProspect India", "domain": "iprospect.in", "contact": "delhi@iprospect.in"}
+      ],
+      "deduped": true,
+      "provenance": "browser_agent/serp+site-crawl"
+    }
+  },
+  "enrichment_mcp": {
+    "__default__": {
+      "enriched": 20,
+      "total": 22,
+      "rate": 0.91,
+      "provenance": "enrichment_mcp/clearbit-mirror"
+    }
+  },
+  "send_email": {
+    "__default__": {"sent": true}
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "nep_metrics": [
+    { "name": "lead_yield", "target": ">=20", "unit": "rows" },
+    { "name": "enrichment_rate", "target": ">=0.8", "unit": "fraction" },
+    { "name": "dedupe_precision", "target": ">=0.95", "unit": "fraction" }
+  ]
+}
