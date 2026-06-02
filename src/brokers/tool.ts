@@ -30,12 +30,17 @@ export function argsHash(args: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(sorted)).digest("hex").slice(0, 12);
 }
 
-// Args the executor passes are a deterministic function of the task.
-const TOOL_PARAMS = Type.Object({
-  task_id: Type.String(),
-  objective: Type.String(),
-  acceptance: Type.String(),
-});
+// In unit mode the executor passes a deterministic arg shape; in integration/live
+// the real model chooses its own args. Keep the schema permissive so any
+// well-formed call validates and resolves against the mock's __default__ bucket.
+const TOOL_PARAMS = Type.Object(
+  {
+    task_id: Type.Optional(Type.String()),
+    objective: Type.Optional(Type.String()),
+    acceptance: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true },
+);
 
 export class ToolBroker {
   allow: Set<string>;

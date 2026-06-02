@@ -9,9 +9,22 @@
  *   nrt suite    <agents-dir> [--mode ...]
  */
 
-import { readdirSync, existsSync, statSync } from "node:fs";
+import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load } from "./loader.ts";
+
+// Minimal .env loader (no dependency): used by integration/live mode for keys.
+function loadDotEnv(): void {
+  if (!existsSync(".env")) return;
+  for (const line of readFileSync(".env", "utf8").split("\n")) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+    if (!m || line.trim().startsWith("#")) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (!(m[1] in process.env)) process.env[m[1]] = v;
+  }
+}
+loadDotEnv();
 import { FrontmatterError } from "./schema.ts";
 import { dispatch } from "./api.ts";
 import { loadCases, writeGolden } from "./harness/fixtures.ts";
@@ -104,7 +117,15 @@ async function cmdTest(positional: string[], flags: any): Promise<number> {
   let totalFail = 0;
 
   for (const testCase of cases) {
-    const result = await dispatch(neopPath, testCase, mode);
+    let result;
+    try {
+      result = await dispatch(neopPath, testCase, mode);
+    } catch (e) {
+      totalFail++;
+      console.log(`${FAIL}  ${testCase.case_id}  ${dim(`[run error]`)}`);
+      console.log(red(`      ✗ ${(e as Error).message}`));
+      continue;
+    }
     const report = assertCase(nd, testCase, result);
     if (mode === "unit" && result.terminalState !== "REJECTED") {
       const [ok, detail] = await determinismOk(neopPath, testCase);

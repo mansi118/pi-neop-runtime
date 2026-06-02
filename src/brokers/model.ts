@@ -121,13 +121,23 @@ export class ModelBroker {
   }
 
   private resolveLiveModel(): Model<any> {
-    const alias = "claude-sonnet-4-6";
-    try {
-      return registryGetModel("anthropic" as any, alias as any) as Model<any>;
-    } catch {
+    // Integration/live smoke runs all three Pi-subagents on one Anthropic model
+    // so only ANTHROPIC_API_KEY is required. Override with NRT_MODEL.
+    const wanted = process.env.NRT_MODEL || "claude-sonnet-4-6";
+    const model =
+      (registryGetModel("anthropic" as any, wanted as any) as Model<any>) ||
+      (registryGetModel("anthropic" as any, "claude-sonnet-4-5-20250929" as any) as Model<any>);
+    if (!model) {
       throw new Error(
-        "integration/live mode needs a resolvable model + ANTHROPIC_API_KEY; unit mode needs neither.",
+        `integration/live mode could not resolve model '${wanted}' from the pi-ai anthropic registry`,
       );
     }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error(
+        "integration/live mode requires ANTHROPIC_API_KEY. Set it (e.g. add a .env file with " +
+          "ANTHROPIC_API_KEY=sk-ant-...) and re-run. Unit mode needs no key.",
+      );
+    }
+    return model;
   }
 }
