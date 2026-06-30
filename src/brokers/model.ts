@@ -31,10 +31,28 @@ let FAUX_SEQ = 0;
 
 export type Mode = "unit" | "integration" | "live";
 
+// D2 (ADR-llm): runtime LLM = OpenRouter primary; a direct Anthropic key is supported if set. pi-ai knows
+// both as first-class providers (OPENROUTER_API_KEY / ANTHROPIC_API_KEY). Provider chosen via
+// NEOP_PROVIDER (or CLASSIFIER_PROVIDER), default OpenRouter. The concrete model id rides NRT_MODEL.
+export const PROVIDER_KEY_ENV: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+const DEFAULT_PROVIDER = "openrouter";
+const DEFAULT_MODEL: Record<string, string> = {
+  anthropic: "claude-sonnet-4-6",
+  openrouter: "anthropic/claude-haiku-4.5", // ADR-llm classifier id; box-verify it's a live pi-ai openrouter id
+};
+
+export function resolveProvider(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.NEOP_PROVIDER || env.CLASSIFIER_PROVIDER || DEFAULT_PROVIDER).toLowerCase();
+}
+
 export class ModelBroker {
   mode: Mode;
   private fauxReg?: ReturnType<typeof registerFauxProvider>;
   private model: Model<any>;
+  private provider: string = DEFAULT_PROVIDER;
 
   constructor(mode: Mode) {
     this.mode = mode;
@@ -57,8 +75,10 @@ export class ModelBroker {
     if (this.mode === "unit" && steps.length) this.fauxReg?.setResponses(steps);
   }
 
-  getApiKey = (_provider: string): string => {
-    return this.mode === "unit" ? "faux-key" : process.env.ANTHROPIC_API_KEY ?? "";
+  getApiKey = (provider: string): string => {
+    if (this.mode === "unit") return "faux-key";
+    const env = PROVIDER_KEY_ENV[provider] ?? PROVIDER_KEY_ENV[this.provider] ?? "ANTHROPIC_API_KEY";
+    return process.env[env] ?? "";
   };
 
   dispose(): void {
@@ -121,21 +141,24 @@ export class ModelBroker {
   }
 
   private resolveLiveModel(): Model<any> {
-    // Integration/live smoke runs all three Pi-subagents on one Anthropic model
-    // so only ANTHROPIC_API_KEY is required. Override with NRT_MODEL.
-    const wanted = process.env.NRT_MODEL || "claude-sonnet-4-6";
-    const model =
-      (registryGetModel("anthropic" as any, wanted as any) as Model<any>) ||
-      (registryGetModel("anthropic" as any, "claude-sonnet-4-5-20250929" as any) as Model<any>);
+    // Provider-aware (D2): OpenRouter primary, Anthropic if NEOP_PROVIDER=anthropic. The model id rides
+    // NRT_MODEL; the three Pi-subagents all run on it. (Live id validity + reachability are box-verified.)
+    const provider = resolveProvider();
+    if (!(provider in PROVIDER_KEY_ENV)) {
+      throw new Error(`live mode: unknown provider '${provider}' (use ${Object.keys(PROVIDER_KEY_ENV).join(" | ")})`);
+    }
+    this.provider = provider;
+    const wanted = process.env.NRT_MODEL || DEFAULT_MODEL[provider];
+    const model = registryGetModel(provider as any, wanted as any) as Model<any>;
     if (!model) {
       throw new Error(
-        `integration/live mode could not resolve model '${wanted}' from the pi-ai anthropic registry`,
+        `live mode: could not resolve model '${wanted}' from the pi-ai '${provider}' registry (set NRT_MODEL to a valid id)`,
       );
     }
-    if (!process.env.ANTHROPIC_API_KEY) {
+    const keyEnv = PROVIDER_KEY_ENV[provider];
+    if (!process.env[keyEnv]) {
       throw new Error(
-        "integration/live mode requires ANTHROPIC_API_KEY. Set it (e.g. add a .env file with " +
-          "ANTHROPIC_API_KEY=sk-ant-...) and re-run. Unit mode needs no key.",
+        `live mode (${provider}) requires ${keyEnv}. Set it (env or .env) and re-run. Unit mode needs no key.`,
       );
     }
     return model;

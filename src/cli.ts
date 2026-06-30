@@ -32,6 +32,7 @@ import { assertCase } from "./harness/assertions.ts";
 import { canonicalBytes } from "./plan.ts";
 import { loadTrace } from "./trace.ts";
 import type { Mode } from "./brokers/model.ts";
+import { serveSeat } from "./serve.ts";
 
 const useColor = process.stdout.isTTY;
 const c = (code: string, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -210,6 +211,49 @@ async function cmdSuite(positional: string[], flags: any): Promise<number> {
   return rc;
 }
 
+// serve — run a NEop on a REAL task (M1b mechanism). See src/serve.ts.
+async function cmdServe(positional: string[], flags: any): Promise<number> {
+  const neopPath = positional[0];
+  if (!neopPath || !flags.task) {
+    console.log(red('usage: nrt serve <neop-path> --task "<objective>" [--mode live] [--approvals grant|deny] --i-understand-this-is-T9 yes'));
+    return 1;
+  }
+  const mode: Mode = (flags.mode as Mode) ?? "live";
+  // STOP-AND-ASK (CLAUDE.md): a LIVE seat run IS T9 — the first real NEop executing. Refuse to fire it
+  // without an explicit acknowledgement flag, so it can never run by accident from a stray invocation.
+  if (mode === "live" && flags["i-understand-this-is-T9"] !== "yes") {
+    console.log(
+      red("REFUSING: `serve --mode live` is the first-real-NEop gate (T9). It needs the box (GAP-2 jail),"),
+    );
+    console.log(
+      red("a live palace (GAP-1: PALACE_MCP_URL/PALACE_ID/NEOP_ID) + a model key (OPENROUTER_API_KEY), and"),
+    );
+    console.log(red("explicit T9 authorization. Re-run with `--i-understand-this-is-T9 yes` once all hold."));
+    return 2;
+  }
+  const res = await serveSeat(
+    neopPath,
+    { task: String(flags.task), approvals: flags.approvals === "deny" ? "deny" : "grant" },
+    mode,
+    Date.now(),
+  );
+  console.log(
+    JSON.stringify(
+      {
+        neop: res.neop,
+        terminalState: res.terminalState,
+        acceptanceAllPass: res.acceptanceAllPass,
+        replansPerformed: res.replansPerformed,
+        taskOutcomes: res.taskOutcomes,
+        error: res.error,
+      },
+      null,
+      2,
+    ),
+  );
+  return res.terminalState === "DONE" ? 0 : 1;
+}
+
 async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseFlags(rest);
@@ -225,8 +269,10 @@ async function main(): Promise<number> {
         return await cmdTrace(positional);
       case "suite":
         return await cmdSuite(positional, flags);
+      case "serve":
+        return await cmdServe(positional, flags);
       default:
-        console.log("usage: nrt <validate|test|golden|trace|suite> ...");
+        console.log("usage: nrt <validate|test|golden|trace|suite|serve> ...");
         return 1;
     }
   } catch (e) {
