@@ -6,11 +6,11 @@
  * memory). Seed an entity-rich fact (so extraction routes it to a real wing, not _quarantine), then
  * query a ZERO-LEXICAL-OVERLAP paraphrase and require the fact back as the TOP-RANKED hit.
  *
- * BAR (set 2026-06-30 on box evidence, ML's call): **top-ranked + non-empty.** Success = the seeded
- * fact is results[0], non-empty, with the server floor lowered so a legitimate semantic hit isn't
- * filtered. NOT an absolute cosine: a true zero-overlap paraphrase scores ~0.36 on Titan (the old
- * "0.986" target was a mislabeled LEXICAL score). Empty / wrong-top-hit = FAILURE. Score is reported
- * for the record but does not gate (ranking does).
+ * BAR (set 2026-06-30 on box evidence, ML's call): **top-ranked WITH MARGIN + non-empty.** Success =
+ * the seeded fact is results[0] AND clears #2 by a clear ratio (GAP1_MARGIN, default 1.3x), non-empty,
+ * with the server floor lowered so a legitimate semantic hit isn't filtered. NOT an absolute cosine: a
+ * true zero-overlap paraphrase scores ~0.36 on Titan (the old "0.986" target was a mislabeled LEXICAL
+ * score; a fixed cosine floor is exactly what mis-bit it). Empty / wrong-top-hit / weak-margin = FAILURE.
  *
  * Run on the box (live palace reachable in-VPC), scope env set; seat must have recall+remember:
  *   PALACE_MCP_URL, PALACE_ID, NEOP_ID  (+ optional PALACE_SIGNING_KEY_REF)
@@ -63,13 +63,24 @@ async function main() {
   const score = Number(top.score ?? top.similarity ?? top._score ?? NaN);
   const topIsTarget = TARGET_TOKENS.some((t) => JSON.stringify(top).toLowerCase().includes(t));
 
-  console.log(`top hit score=${score} topIsTarget=${topIsTarget} (n=${results.length})`);
-  // THE BAR: the seeded fact is the #1 ranked hit, non-empty. Score is informational, not a gate.
+  // SEPARATION: absolute cosine is meaningless on heavy paraphrase (0.36 is a STRONG Titan match on
+  // zero-overlap text) — what proves recall is rank + margin. Require the #1 hit to clear #2 by a clear
+  // ratio, never a fixed cosine floor (a fixed floor is exactly what mis-bit the original bar).
+  const second = results[1];
+  const secondScore = second ? Number(second.score ?? second.similarity ?? second._score ?? 0) : 0;
+  const margin = secondScore > 0 ? score / secondScore : Infinity; // Infinity = clean sole hit
+  const MARGIN_MIN = Number(process.env.GAP1_MARGIN ?? "1.3");
+
+  console.log(`top hit score=${score} topIsTarget=${topIsTarget} margin=${margin === Infinity ? "∞" : margin.toFixed(2)}x over #2 (n=${results.length})`);
+  // THE BAR (ML, 2026-06-30): correct entity ranks #1, with clear margin over #2, non-empty. No absolute floor.
   if (!topIsTarget) {
     fail(`top hit is NOT the seeded fact — the seat did not recall its own memory ranked-first: ${JSON.stringify(top).slice(0, 220)}`);
   }
+  if (margin < MARGIN_MIN) {
+    fail(`top hit is the seeded fact but margin ${margin.toFixed(2)}x over #2 < ${MARGIN_MIN}x — not an unambiguous #1`);
+  }
 
-  console.log(`\x1b[32mGAP-1 LIVE PROOF: GREEN\x1b[0m — Hermes-native, seat-scoped write→recall: the seeded fact returned as the #1 ranked hit (score ${score}) on a zero-lexical-overlap query.`);
+  console.log(`\x1b[32mGAP-1 LIVE PROOF: GREEN\x1b[0m — Hermes-native, seat-scoped write→recall: seeded fact is the unambiguous #1 (score ${score}, ${margin === Infinity ? "sole hit" : margin.toFixed(2) + "x over #2"}) on a zero-lexical-overlap query.`);
 }
 
 main().catch((e) => fail(e instanceof Error ? e.stack ?? e.message : String(e)));
