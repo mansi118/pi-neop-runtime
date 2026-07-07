@@ -180,7 +180,7 @@ describe("serveTurn — real node:http round-trip (thin transport shell)", () =>
         body: goodBody,
       });
       expect(ok.status).toBe(200);
-      expect((await ok.json()).kind).toBe("reply");
+      expect(((await ok.json()) as { kind: string }).kind).toBe("reply");
 
       const noAuth = await fetch(`${s.base}/seat/turn`, { method: "POST", body: goodBody });
       expect(noAuth.status).toBe(403);
