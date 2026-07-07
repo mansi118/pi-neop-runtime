@@ -35,6 +35,8 @@ import type { Mode } from "./brokers/model.ts";
 import { ModelBroker, resolveProvider } from "./brokers/model.ts";
 import { modelGenerate } from "./seat/generate.ts";
 import { classifyProbeError } from "./seat/probeErrors.ts";
+import { classifyMemoryProbeError } from "./seat/memoryProbeErrors.ts";
+import { MemoryBroker } from "./brokers/memory.ts";
 import { serveSeat } from "./serve.ts";
 import { runSeatServer } from "./seat/server.ts";
 
@@ -309,6 +311,40 @@ async function cmdProbeModel(): Promise<number> {
   }
 }
 
+// probe-memory — Proof B, HERMES-NATIVE (bar2 / box-proofs card): does the runtime COMPOSE a live ranked
+// retrieval end-to-end through its own palaceClient? The memory-side twin of probe-model. ranked_retrieval_
+// proof.py proves the PALACE ranks (Python broker); this proves the HERMES composition — "palace ranks" ≠
+// "Hermes retrieves". Its diagnostic value: if a live turn later has a memory failure, this disambiguates
+// palace (proven green elsewhere) from the Hermes path (isolated here) — exactly as probe-model disambiguates
+// model from classifier. Box-only in effect (needs the palace + a permissioned seat); fail-closed offline.
+async function cmdProbeMemory(positional: string[]): Promise<number> {
+  // Default = the OBLIQUE canary query ranked_retrieval_proof.py seeds, so this retrieves the SAME canary
+  // through the Hermes path (the composition proof). Override with a query arg.
+  const query = positional.join(" ").trim() || "where does the team regroup after an outage?";
+  console.log(`== probe-memory (Proof B, Hermes-native) → query=${JSON.stringify(query)} ==`);
+  let memory: MemoryBroker;
+  try {
+    memory = new MemoryBroker("live"); // palaceClientFromEnv — scope BAKED from env, fail-closed at construction
+  } catch (e) {
+    console.log(`${red("FAIL")}  construct — ${classifyMemoryProbeError((e as Error).message)}`);
+    return 2;
+  }
+  try {
+    const results = await memory.retrieve(query, 5);
+    if (!results || results.length === 0) {
+      console.log(`${red("FAIL")}  retrieval returned [] — graceful-empty = HARD FAIL. Cross-check ranked_retrieval_proof.py: if THAT is green and THIS empty, the Hermes composition is the fault; if BOTH empty, the palace/write path.`);
+      return 1;
+    }
+    console.log(`  ${green("ok")}   retrieved ${results.length} ranked chunk(s) through the Hermes palaceClient path`);
+    console.log(`  rank-1: ${JSON.stringify(JSON.stringify(results[0]).slice(0, 200))}`);
+    console.log(`${green("PASS")}  Proof B (composition) — Hermes RETRIEVES ranked memory end-to-end via palace /mcp. Eyeball rank-1 for the expected canary.`);
+    return 0;
+  } catch (e) {
+    console.log(`${red("FAIL")}  retrieve — ${classifyMemoryProbeError((e as Error).message)}`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseFlags(rest);
@@ -330,8 +366,10 @@ async function main(): Promise<number> {
         return await cmdServeSeat();
       case "probe-model":
         return await cmdProbeModel();
+      case "probe-memory":
+        return await cmdProbeMemory(positional);
       default:
-        console.log("usage: nrt <validate|test|golden|trace|suite|serve|serve-seat|probe-model> ...");
+        console.log("usage: nrt <validate|test|golden|trace|suite|serve|serve-seat|probe-model|probe-memory> ...");
         return 1;
     }
   } catch (e) {
