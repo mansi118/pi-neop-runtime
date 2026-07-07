@@ -34,15 +34,36 @@ export type Mode = "unit" | "integration" | "live";
 // D2 (ADR-llm): runtime LLM = OpenRouter primary; a direct Anthropic key is supported if set. pi-ai knows
 // both as first-class providers (OPENROUTER_API_KEY / ANTHROPIC_API_KEY). Provider chosen via
 // NEOP_PROVIDER (or CLASSIFIER_PROVIDER), default OpenRouter. The concrete model id rides NRT_MODEL.
+//
+// amazon-bedrock (deploy-topology Decision 2): Bedrock/Nova over the sealed spine (no NAT). pi-ai supports it
+// natively as the `amazon-bedrock` provider and reads BOTH the bearer token AND the region FROM ENV ITSELF
+// (`AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`/`AWS_DEFAULT_REGION`) at stream time — so for this provider the
+// key/region flow WITHOUT `getApiKey` (that asymmetry is intentional; see `resolveBedrockModel`).
 export const PROVIDER_KEY_ENV: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
+  "amazon-bedrock": "AWS_BEARER_TOKEN_BEDROCK", // pi-ai reads this env directly (bypasses SigV4)
 };
 const DEFAULT_PROVIDER = "openrouter";
 const DEFAULT_MODEL: Record<string, string> = {
   anthropic: "claude-sonnet-4-6",
   openrouter: "anthropic/claude-haiku-4.5", // ADR-llm classifier id; box-verify it's a live pi-ai openrouter id
+  "amazon-bedrock": "apac.amazon.nova-lite-v1:0", // APAC inference profile; bare amazon.nova-* rejects on-demand
 };
+
+// pi-ai's registry only knows BARE bedrock ids, but on-demand Converse invoke needs the regional inference
+// profile (`apac.*`) — bare ids reject (proven by Mempalace's bedrockLlm.ts + probe). pi-ai has NO region→
+// profile derivation: it sends `model.id` verbatim as the Converse `modelId` (amazon-bedrock.js:98). So we
+// fetch the bare catalog Model, then stamp the `apac.*` profile onto `model.id`. This map is bare↔profile.
+const BEDROCK_PROFILE_TO_CATALOG: Record<string, string> = {
+  "apac.amazon.nova-lite-v1:0": "amazon.nova-lite-v1:0",
+  "apac.amazon.nova-micro-v1:0": "amazon.nova-micro-v1:0",
+  "apac.amazon.nova-pro-v1:0": "amazon.nova-pro-v1:0",
+  "apac.amazon.nova-2-lite-v1:0": "amazon.nova-2-lite-v1:0",
+};
+// The spine region. The bearer token is region-scoped — a us-east-1 token 403s against ap-south-1 (proven
+// 2026-07-07) — so we pin this if the operator hasn't set AWS_REGION. Override via NRT_BEDROCK_REGION.
+const DEFAULT_BEDROCK_REGION = "ap-south-1";
 
 export function resolveProvider(env: NodeJS.ProcessEnv = process.env): string {
   return (env.NEOP_PROVIDER || env.CLASSIFIER_PROVIDER || DEFAULT_PROVIDER).toLowerCase();
@@ -141,26 +162,66 @@ export class ModelBroker {
   }
 
   private resolveLiveModel(): Model<any> {
-    // Provider-aware (D2): OpenRouter primary, Anthropic if NEOP_PROVIDER=anthropic. The model id rides
-    // NRT_MODEL; the three Pi-subagents all run on it. (Live id validity + reachability are box-verified.)
+    // Provider-aware (D2): OpenRouter primary, Anthropic if NEOP_PROVIDER=anthropic, amazon-bedrock for the
+    // sealed spine. The model id rides NRT_MODEL; the three Pi-subagents all run on it. (Live id validity +
+    // reachability are box-verified.)
     const provider = resolveProvider();
     if (!(provider in PROVIDER_KEY_ENV)) {
       throw new Error(`live mode: unknown provider '${provider}' (use ${Object.keys(PROVIDER_KEY_ENV).join(" | ")})`);
     }
     this.provider = provider;
-    const wanted = process.env.NRT_MODEL || DEFAULT_MODEL[provider];
-    const model = registryGetModel(provider as any, wanted as any) as Model<any>;
-    if (!model) {
-      throw new Error(
-        `live mode: could not resolve model '${wanted}' from the pi-ai '${provider}' registry (set NRT_MODEL to a valid id)`,
-      );
-    }
+    // Fail-closed on the key BEFORE resolving the model — one clear, named error, not a mystery downstream.
     const keyEnv = PROVIDER_KEY_ENV[provider];
     if (!process.env[keyEnv]) {
       throw new Error(
         `live mode (${provider}) requires ${keyEnv}. Set it (env or .env) and re-run. Unit mode needs no key.`,
       );
     }
+    const wanted = process.env.NRT_MODEL || DEFAULT_MODEL[provider];
+    if (provider === "amazon-bedrock") return this.resolveBedrockModel(wanted);
+    const model = registryGetModel(provider as any, wanted as any) as Model<any>;
+    if (!model) {
+      throw new Error(
+        `live mode: could not resolve model '${wanted}' from the pi-ai '${provider}' registry (set NRT_MODEL to a valid id)`,
+      );
+    }
+    return model;
+  }
+
+  /**
+   * Bedrock (Nova) via pi-ai's amazon-bedrock provider — the code half of deploy-topology Decision 2 (sealed
+   * spine, no NAT). Two pi-ai facts drive this (verified in dist 2026-07-07), and they are the whole reason
+   * this isn't a plain `registryGetModel`:
+   *   1. The registry knows only BARE nova ids, but on-demand invoke needs the regional `apac.*` inference
+   *      profile (bare rejects). pi-ai has no region→profile derivation — it sends `model.id` verbatim as the
+   *      Converse `modelId` — so we fetch the bare catalog Model, then stamp the `apac.*` profile onto `.id`.
+   *   2. bearer + region are read from env by pi-ai ITSELF at stream time. So `getApiKey` is moot here; we
+   *      instead PIN the region (the token is region-scoped — a us-east-1 token 403s in ap-south-1).
+   * Errors are named + distinct (auth vs unknown-id vs region) — the lesson of the model-egress thread.
+   */
+  private resolveBedrockModel(wanted: string): Model<any> {
+    // Region: pi-ai reads AWS_REGION/AWS_DEFAULT_REGION at stream time (there is no getModel region arg). Pin
+    // the spine region unless the operator has already chosen one — a region/token mismatch is a silent 403.
+    const region =
+      process.env.NRT_BEDROCK_REGION ||
+      process.env.AWS_REGION ||
+      process.env.AWS_DEFAULT_REGION ||
+      DEFAULT_BEDROCK_REGION;
+    process.env.AWS_REGION = region;
+    process.env.AWS_DEFAULT_REGION = region;
+
+    // Fetch the Model shell by its BARE catalog id (keeps pricing/capability metadata), then send the profile.
+    const catalogId = BEDROCK_PROFILE_TO_CATALOG[wanted] ?? wanted;
+    const model = registryGetModel("amazon-bedrock" as any, catalogId as any) as Model<any>;
+    if (!model) {
+      const known = Object.keys(BEDROCK_PROFILE_TO_CATALOG).join(", ");
+      throw new Error(
+        `live mode (amazon-bedrock): bare id '${catalogId}' is not a known pi-ai bedrock model ` +
+          `(derived from NRT_MODEL='${wanted}'). Set NRT_MODEL to one of: ${known}.`,
+      );
+    }
+    // Stamp the regional inference-profile id so the Converse request targets apac.* (bare rejects on-demand).
+    if (wanted !== catalogId) (model as any).id = wanted;
     return model;
   }
 }

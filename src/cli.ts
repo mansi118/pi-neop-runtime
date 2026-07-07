@@ -32,6 +32,11 @@ import { assertCase } from "./harness/assertions.ts";
 import { canonicalBytes } from "./plan.ts";
 import { loadTrace } from "./trace.ts";
 import type { Mode } from "./brokers/model.ts";
+import { ModelBroker, resolveProvider } from "./brokers/model.ts";
+import { modelGenerate } from "./seat/generate.ts";
+import { classifyProbeError } from "./seat/probeErrors.ts";
+import { classifyMemoryProbeError } from "./seat/memoryProbeErrors.ts";
+import { MemoryBroker } from "./brokers/memory.ts";
 import { serveSeat } from "./serve.ts";
 import { runSeatServer } from "./seat/server.ts";
 
@@ -268,6 +273,78 @@ async function cmdServeSeat(): Promise<number> {
   return 0; // unreachable
 }
 
+// probe-model — Proof A (bar2-first-live-turn-runbook): does the live model RESOLVE and GENERATE in-VPC?
+// A bare, tool-less single generation — deliberately NOT the classifier (that conflates the model layer with
+// routing). "resolves ≠ generates": constructing the broker proves resolution; only a returned completion
+// proves generation. Box-only in effect (needs the bearer + PrivateLink reach); fail-closed offline.
+// A failure surfaces as a NAMED cause via classifyProbeError (./seat/probeErrors), not a generic stack trace.
+async function cmdProbeModel(): Promise<number> {
+  const provider = resolveProvider();
+  console.log(`== probe-model (Proof A) → provider=${provider}  NRT_MODEL=${process.env.NRT_MODEL ?? "(default)"}  AWS_REGION=${process.env.AWS_REGION ?? "(broker-pinned)"} ==`);
+  let broker: ModelBroker;
+  try {
+    broker = new ModelBroker("live"); // resolves the model + fail-closes on a blank bearer (RESOLUTION step)
+  } catch (e) {
+    console.log(`${red("FAIL")}  resolution — ${classifyProbeError((e as Error).message)}`);
+    return 2;
+  }
+  console.log(`  ${green("ok")}   resolved model id = ${(broker.getModel() as any).id}`);
+  const gen = modelGenerate(broker);
+  const SENTINEL = "NOVA-PROBE-OK";
+  try {
+    const out = (await gen(`You are a health probe. Reply with EXACTLY this token and nothing else: ${SENTINEL}`, "Respond now.")).trim();
+    broker.dispose();
+    if (!out) {
+      console.log(`${red("FAIL")}  GENERATED nothing — empty completion (resolves ≠ generates: resolution passed, generation returned []).`);
+      return 1;
+    }
+    const followed = out.toUpperCase().includes(SENTINEL);
+    console.log(`  ${green("ok")}   GENERATED ${out.length} chars: ${JSON.stringify(out.slice(0, 120))}`);
+    console.log(followed
+      ? `${green("PASS")}  Proof A — Nova RESOLVES and GENERATES in-VPC, and followed the instruction.`
+      : `${green("PASS*")} Proof A — Nova RESOLVES and GENERATES in-VPC (non-empty). NOTE: did not echo the sentinel — generation works; eyeball coherence.`);
+    return 0;
+  } catch (e) {
+    broker.dispose();
+    console.log(`${red("FAIL")}  generate — ${classifyProbeError((e as Error).message)}`);
+    return 1;
+  }
+}
+
+// probe-memory — Proof B, HERMES-NATIVE (bar2 / box-proofs card): does the runtime COMPOSE a live ranked
+// retrieval end-to-end through its own palaceClient? The memory-side twin of probe-model. ranked_retrieval_
+// proof.py proves the PALACE ranks (Python broker); this proves the HERMES composition — "palace ranks" ≠
+// "Hermes retrieves". Its diagnostic value: if a live turn later has a memory failure, this disambiguates
+// palace (proven green elsewhere) from the Hermes path (isolated here) — exactly as probe-model disambiguates
+// model from classifier. Box-only in effect (needs the palace + a permissioned seat); fail-closed offline.
+async function cmdProbeMemory(positional: string[]): Promise<number> {
+  // Default = the OBLIQUE canary query ranked_retrieval_proof.py seeds, so this retrieves the SAME canary
+  // through the Hermes path (the composition proof). Override with a query arg.
+  const query = positional.join(" ").trim() || "where does the team regroup after an outage?";
+  console.log(`== probe-memory (Proof B, Hermes-native) → query=${JSON.stringify(query)} ==`);
+  let memory: MemoryBroker;
+  try {
+    memory = new MemoryBroker("live"); // palaceClientFromEnv — scope BAKED from env, fail-closed at construction
+  } catch (e) {
+    console.log(`${red("FAIL")}  construct — ${classifyMemoryProbeError((e as Error).message)}`);
+    return 2;
+  }
+  try {
+    const results = await memory.retrieve(query, 5);
+    if (!results || results.length === 0) {
+      console.log(`${red("FAIL")}  retrieval returned [] — graceful-empty = HARD FAIL. Cross-check ranked_retrieval_proof.py: if THAT is green and THIS empty, the Hermes composition is the fault; if BOTH empty, the palace/write path.`);
+      return 1;
+    }
+    console.log(`  ${green("ok")}   retrieved ${results.length} ranked chunk(s) through the Hermes palaceClient path`);
+    console.log(`  rank-1: ${JSON.stringify(JSON.stringify(results[0]).slice(0, 200))}`);
+    console.log(`${green("PASS")}  Proof B (composition) — Hermes RETRIEVES ranked memory end-to-end via palace /mcp. Eyeball rank-1 for the expected canary.`);
+    return 0;
+  } catch (e) {
+    console.log(`${red("FAIL")}  retrieve — ${classifyMemoryProbeError((e as Error).message)}`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseFlags(rest);
@@ -287,8 +364,12 @@ async function main(): Promise<number> {
         return await cmdServe(positional, flags);
       case "serve-seat":
         return await cmdServeSeat();
+      case "probe-model":
+        return await cmdProbeModel();
+      case "probe-memory":
+        return await cmdProbeMemory(positional);
       default:
-        console.log("usage: nrt <validate|test|golden|trace|suite|serve|serve-seat> ...");
+        console.log("usage: nrt <validate|test|golden|trace|suite|serve|serve-seat|probe-model|probe-memory> ...");
         return 1;
     }
   } catch (e) {
