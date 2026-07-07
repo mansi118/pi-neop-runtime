@@ -16,7 +16,7 @@ import { type Plan, type Task, planFromObj } from "./plan.ts";
 import { validatePlanV1 } from "./schema.ts";
 import type { NeopDefinition } from "./loader.ts";
 
-function lastAssistantText(agent: Agent): string {
+export function lastAssistantText(agent: Agent): string {
   const msgs = agent.state.messages;
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m: any = msgs[i];
@@ -45,7 +45,7 @@ function tallyUsage(agent: Agent, trace: Trace): void {
   }
 }
 
-function newAgent(system: string, model: any, getApiKey: any, tools: any[], guard?: ToolBroker): Agent {
+export function newAgent(system: string, model: any, getApiKey: any, tools: any[], guard?: ToolBroker): Agent {
   return new Agent({
     initialState: { model, systemPrompt: system, tools },
     getApiKey,
