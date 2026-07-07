@@ -33,6 +33,7 @@ import { canonicalBytes } from "./plan.ts";
 import { loadTrace } from "./trace.ts";
 import type { Mode } from "./brokers/model.ts";
 import { serveSeat } from "./serve.ts";
+import { runSeatServer } from "./seat/server.ts";
 
 const useColor = process.stdout.isTTY;
 const c = (code: string, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -254,6 +255,19 @@ async function cmdServe(positional: string[], flags: any): Promise<number> {
   return res.terminalState === "DONE" ? 0 : 1;
 }
 
+// serve-seat — the B-fwd HTTP seat wrapper (POST /seat/turn). Config + T9 gate live in seat/server.ts;
+// this just boots it and blocks. Refuses loudly (fail-fast) on a blank FORWARD_TOKEN or missing NEOP_T9_ACK.
+async function cmdServeSeat(): Promise<number> {
+  try {
+    runSeatServer(process.env); // throws on blank token / missing T9 ack / blank NEOP_PATH — before wiring live
+  } catch (e) {
+    console.log(red(`serve-seat refused: ${(e as Error).message}`));
+    return 2;
+  }
+  await new Promise<never>(() => {}); // the node:http server keeps the loop alive; serve until killed
+  return 0; // unreachable
+}
+
 async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseFlags(rest);
@@ -271,8 +285,10 @@ async function main(): Promise<number> {
         return await cmdSuite(positional, flags);
       case "serve":
         return await cmdServe(positional, flags);
+      case "serve-seat":
+        return await cmdServeSeat();
       default:
-        console.log("usage: nrt <validate|test|golden|trace|suite|serve> ...");
+        console.log("usage: nrt <validate|test|golden|trace|suite|serve|serve-seat> ...");
         return 1;
     }
   } catch (e) {
