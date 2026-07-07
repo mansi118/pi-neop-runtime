@@ -4,7 +4,7 @@
  * What IS testable offline: the task→run-case synthesis and the D2 provider/key resolution logic.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { buildRunCase } from "../src/serve.ts";
 import { resolveProvider, PROVIDER_KEY_ENV, ModelBroker } from "../src/brokers/model.ts";
 
@@ -46,9 +46,13 @@ describe("resolveProvider — D2 provider selection (OpenRouter primary)", () =>
       "anthropic", // NEOP_PROVIDER wins
     );
   });
-  it("maps both providers to their key env", () => {
+  it("maps all providers to their key env", () => {
     expect(PROVIDER_KEY_ENV.openrouter).toBe("OPENROUTER_API_KEY");
     expect(PROVIDER_KEY_ENV.anthropic).toBe("ANTHROPIC_API_KEY");
+    expect(PROVIDER_KEY_ENV["amazon-bedrock"]).toBe("AWS_BEARER_TOKEN_BEDROCK"); // Decision 2
+  });
+  it("selects amazon-bedrock via NEOP_PROVIDER, case-insensitively", () => {
+    expect(resolveProvider({ NEOP_PROVIDER: "Amazon-Bedrock" } as any)).toBe("amazon-bedrock");
   });
 });
 
@@ -58,5 +62,65 @@ describe("ModelBroker unit mode needs no key (live key path is box-gated)", () =
     expect(b.getApiKey("openrouter")).toBe("faux-key");
     expect(b.getApiKey("anthropic")).toBe("faux-key");
     b.dispose();
+  });
+});
+
+// Bedrock (Decision 2): live-mode RESOLUTION logic is offline-testable (registryGetModel is a pure Map lookup,
+// no network). What is NOT here is the in-VPC generate itself (box + ap-south-1 token): resolves ≠ generates.
+describe("ModelBroker live mode — amazon-bedrock provider (Decision 2, sealed spine)", () => {
+  const KEYS = [
+    "NEOP_PROVIDER",
+    "CLASSIFIER_PROVIDER",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "NRT_MODEL",
+    "NRT_BEDROCK_REGION",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+  ];
+  let saved: Record<string, string | undefined>;
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
+    process.env.NEOP_PROVIDER = "amazon-bedrock";
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("fails CLOSED at construction when AWS_BEARER_TOKEN_BEDROCK is blank (no fake generate path)", () => {
+    expect(() => new ModelBroker("live")).toThrow(/AWS_BEARER_TOKEN_BEDROCK/);
+  });
+
+  it("with a bearer set, resolves the Nova model and stamps the apac.* inference profile onto model.id", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    const b = new ModelBroker("live");
+    // The registry holds the BARE id; the broker stamps the regional profile the on-demand invoke needs.
+    expect((b.getModel() as any).id).toBe("apac.amazon.nova-lite-v1:0");
+    b.dispose();
+  });
+
+  it("pins the spine region (ap-south-1) when the operator has set none — the token is region-scoped", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    const b = new ModelBroker("live");
+    expect(process.env.AWS_REGION).toBe("ap-south-1");
+    expect(process.env.AWS_DEFAULT_REGION).toBe("ap-south-1");
+    b.dispose();
+  });
+
+  it("honors an operator-chosen region over the default", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    process.env.NRT_BEDROCK_REGION = "ap-southeast-2";
+    const b = new ModelBroker("live");
+    expect(process.env.AWS_REGION).toBe("ap-southeast-2");
+    b.dispose();
+  });
+
+  it("names the error distinctly when NRT_MODEL is an apac profile with no known bare id", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    process.env.NRT_MODEL = "apac.amazon.nonesuch-v9:9";
+    expect(() => new ModelBroker("live")).toThrow(/not a known pi-ai bedrock model/);
   });
 });
