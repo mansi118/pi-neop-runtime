@@ -35,11 +35,19 @@ function renderRetrieval(retrieval: unknown[]): string {
   return retrieval.map((r) => `- ${typeof r === "string" ? r : JSON.stringify(r)}`).join("\n");
 }
 
-/** The relevance score of a single retrieved chunk (`confidence`/`score`/`_score`), or undefined if none. */
+/**
+ * The relevance score of a single retrieved chunk. Prefer a QUERY-similarity field (`score`/`_score`/
+ * `relevance`) over `confidence` — measured 2026-07-09: the palace's `confidence` is the chunk's STORED
+ * confidence (~0.9 for every result, including off-topic queries), NOT query relevance, so thresholding on
+ * it can't separate on- from off-topic. If the palace surfaces a real similarity score, this reads it;
+ * `confidence` is only a last-resort fallback. Returns undefined if no numeric score is present.
+ */
 export function chunkScore(r: unknown): number | undefined {
   if (r && typeof r === "object") {
     const o = r as Record<string, unknown>;
-    return [o.confidence, o.score, o._score].find((v) => typeof v === "number") as number | undefined;
+    return [o.score, o._score, o.relevance, o.similarity, o.confidence].find((v) => typeof v === "number") as
+      | number
+      | undefined;
   }
   return undefined;
 }
