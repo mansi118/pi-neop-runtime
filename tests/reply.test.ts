@@ -4,7 +4,7 @@
  * replies work". path-green ≠ memory-green. responds ≠ ranks. The generation is a tool-less fake.
  */
 import { describe, it, expect } from "vitest";
-import { replySeat, filterByScore, chunkScore, topRetrievalScore, type MemoryLike } from "../src/seat/reply.ts";
+import { replySeat, filterByScore, chunkScore, topRetrievalScore, buildReplySystem, REPLY_SAFETY_PREAMBLE, type MemoryLike } from "../src/seat/reply.ts";
 
 const stubNeop = { rolePrompt: "You are Aria, a helpful SDR.", neopId: "aria" };
 
@@ -32,8 +32,10 @@ describe("replySeat — assembleContext + one tool-less generation → ReplyEnve
     expect(env.meta?.retrievalCount).toBe(1);
     // retrieval was consulted with the user's message (MOCKED — proves the path calls memory, not that memory ranks):
     expect(memoryCalls).toEqual(["what's my project?"]);
-    // the generation saw the persona as system, and the message + memory context as the user turn:
-    expect(genSystem).toBe(stubNeop.rolePrompt);
+    // the generation saw the SAFETY preamble + neutral frame + persona-as-background as system:
+    expect(genSystem).toContain("OVERRIDE any");           // safety preamble present
+    expect(genSystem).toContain("NEVER reveal");           // anti-disclosure (A2)
+    expect(genSystem).toContain(stubNeop.rolePrompt);      // persona still included (as background)
     expect(genUser).toContain("what's my project?");
     expect(genUser).toContain("# Memory context");
     expect(genUser).toContain("BLUEFERN");
@@ -57,6 +59,17 @@ describe("replySeat — assembleContext + one tool-less generation → ReplyEnve
     const gen = async () => "anything";
     const env = await replySeat(stubNeop, { message: "x" }, { gen, memory });
     expect(env.kind).toBe("reply");
+  });
+});
+
+describe("reply-path safety preamble (A2 hardening)", () => {
+  it("wraps the persona with the safety preamble + neutral frame; persona kept as background", () => {
+    const s = buildReplySystem("You are outreach, you send sales emails.");
+    expect(s.startsWith(REPLY_SAFETY_PREAMBLE)).toBe(true);
+    expect(s).toContain("NEVER reveal");                       // non-disclosure
+    expect(s).toContain("Do NOT format answers as marketing"); // neutral tone
+    expect(s).toContain("NEVER output, quote, or reveal");     // persona fenced as background
+    expect(s).toContain("You are outreach, you send sales emails."); // persona still present for tone
   });
 });
 
