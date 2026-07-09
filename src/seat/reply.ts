@@ -36,6 +36,24 @@ function renderRetrieval(retrieval: unknown[]): string {
 }
 
 /**
+ * Best relevance score across retrieved chunks (max of `confidence`/`score`/`_score`), for telemetry only.
+ * Lets the per-turn log show WHETHER retrieval was actually relevant — palace_search returns nearest
+ * neighbours with no threshold, so a low top score on an off-topic query is the signal that the "memory
+ * context" fed to the model was weak. Returns undefined if no numeric score is present.
+ */
+export function topRetrievalScore(retrieval: unknown[]): number | undefined {
+  let best: number | undefined;
+  for (const r of retrieval ?? []) {
+    if (r && typeof r === "object") {
+      const o = r as Record<string, unknown>;
+      const s = [o.confidence, o.score, o._score].find((v) => typeof v === "number") as number | undefined;
+      if (typeof s === "number" && (best === undefined || s > best)) best = s;
+    }
+  }
+  return best;
+}
+
+/**
  * A single-turn, tool-less, memory-backed reply. NOTE the GAP-1 dependency above: retrieval quality is NOT
  * proven here (it is mocked); this proves the PATH, not the memory.
  */
@@ -44,12 +62,24 @@ export async function replySeat(
   msg: { message: string },
   deps: { gen: Generate; memory: MemoryLike },
 ): Promise<ReplyEnvelope> {
+  const tRet = Date.now();
   const ctx = await deps.memory.assembleContext(msg.message); // GAP-1 live retrieval (box-unproven; mocked in tests)
+  const retrievalMs = Date.now() - tRet;
   const user = `${msg.message}\n\n# Memory context\n${renderRetrieval(ctx.retrieval)}`;
+  const tGen = Date.now();
   const text = await deps.gen(neop.rolePrompt, user); // tool-less: a reply, not an action
+  const genMs = Date.now() - tGen;
   return {
     kind: "reply",
     text,
-    meta: { neopId: neop.neopId, retrievalCount: ctx.retrieval?.length ?? 0 },
+    // meta carries per-turn telemetry up to serveTurn's structured log (timings + retrieval quality). The
+    // scores make the memory-relevance question observable per turn instead of needing a synthetic probe.
+    meta: {
+      neopId: neop.neopId,
+      retrievalCount: ctx.retrieval?.length ?? 0,
+      retrievalMs,
+      genMs,
+      topScore: topRetrievalScore(ctx.retrieval),
+    },
   };
 }

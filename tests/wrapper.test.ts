@@ -13,6 +13,7 @@ import {
   makeLiveHandlers,
   renderRunResult,
   serveTurn,
+  formatTurnLog,
   type SeatHandlers,
   type TurnRequest,
   type WrapperConfig,
@@ -115,6 +116,53 @@ describe("handleTurn — auth → parse → route", () => {
     const out = await handleTurn("Bearer SECRET-TOKEN", goodBody, throwing, CONFIG);
     expect(out.status).toBe(500);
     expect(JSON.stringify(out.body)).not.toContain("boom secret internal detail");
+  });
+});
+
+describe("per-turn telemetry (for the structured log; never sent to the caller)", () => {
+  it("200 telemetry carries route + timings + retrieval meta from the envelope", async () => {
+    const rich: SeatHandlers = {
+      classify: async () => conv("conversational"),
+      reply: async () =>
+        ({ kind: "reply", text: "hi", meta: { retrievalCount: 3, retrievalMs: 120, genMs: 800, topScore: 0.91 } }) as ReplyEnvelope,
+      runTask: async () => ({ kind: "task", text: "" }) as ReplyEnvelope,
+    };
+    const out = await handleTurn("Bearer SECRET-TOKEN", goodBody, rich, CONFIG);
+    expect(out.telemetry.route).toBe("conversational");
+    expect(out.telemetry.status).toBe(200);
+    expect(out.telemetry.retrievalCount).toBe(3);
+    expect(out.telemetry.topScore).toBe(0.91);
+    expect(out.telemetry.genMs).toBe(800);
+    expect(typeof out.telemetry.totalMs).toBe("number");
+  });
+
+  it("500 telemetry CAPTURES the error cause (for operators) even though the body hides it", async () => {
+    const throwing: SeatHandlers = {
+      classify: async () => conv("conversational"),
+      reply: async () => {
+        throw new Error("palace ACL deny: seat unseeded");
+      },
+      runTask: async () => ({ kind: "task", text: "" }) as ReplyEnvelope,
+    };
+    const out = await handleTurn("Bearer SECRET-TOKEN", goodBody, throwing, CONFIG);
+    expect(out.telemetry.route).toBe("error");
+    expect(out.telemetry.error).toContain("palace ACL deny");
+    expect(JSON.stringify(out.body)).not.toContain("palace ACL deny"); // still not leaked to caller
+  });
+
+  it("403/400 telemetry marks the turn rejected with the errcode", async () => {
+    const rej = await handleTurn("Bearer WRONG", goodBody, handlers("conversational"), CONFIG);
+    expect(rej.telemetry.route).toBe("rejected");
+    expect(rej.telemetry.errcode).toBe("M_FORBIDDEN");
+  });
+
+  it("formatTurnLog is greppable, omits undefined fields, includes the 500 cause", () => {
+    const ok = formatTurnLog({ route: "conversational", status: 200, totalMs: 950, genMs: 800, retrievalCount: 2, topScore: 0.9 });
+    expect(ok).toBe("seat-turn status=200 route=conversational total_ms=950 gen_ms=800 retrieved=2 top_score=0.9");
+    expect(ok).not.toContain("classify_ms"); // undefined field omitted
+    const err = formatTurnLog({ route: "error", status: 500, totalMs: 30, errcode: "M_UNKNOWN", error: "boom" });
+    expect(err).toContain("status=500");
+    expect(err).toContain('error="boom"');
   });
 });
 

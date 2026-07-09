@@ -113,29 +113,96 @@ export function parseTurn(rawBody: string): ParseResult {
   };
 }
 
+// ── per-turn telemetry (returned to the transport for a structured log; NEVER sent to the caller) ─────
+export interface TurnTelemetry {
+  route: "conversational" | "actionable" | "error" | "rejected";
+  status: number;
+  totalMs: number; // classify + reply/task wall time inside handleTurn
+  classifyMs?: number;
+  retrievalCount?: number;
+  retrievalMs?: number;
+  genMs?: number;
+  topScore?: number;
+  errcode?: string;
+  error?: string; // the CAUSE of a 500 — logged for operators, not returned to the caller
+}
+
 // ── the security core: auth → parse → route (PURE over injected handlers) ─────────
 export async function handleTurn(
   authHeader: string | undefined,
   rawBody: string,
   handlers: SeatHandlers,
   config: WrapperConfig,
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; telemetry: TurnTelemetry }> {
   if (!authOk(authHeader, config.forwardToken)) {
-    return { status: 403, body: { errcode: "M_FORBIDDEN", error: "bad or missing forward token" } };
+    return {
+      status: 403,
+      body: { errcode: "M_FORBIDDEN", error: "bad or missing forward token" },
+      telemetry: { route: "rejected", status: 403, totalMs: 0, errcode: "M_FORBIDDEN" },
+    };
   }
   const parsed = parseTurn(rawBody);
-  if (!parsed.ok) return { status: 400, body: { errcode: parsed.errcode, error: parsed.error } };
+  if (!parsed.ok) {
+    return {
+      status: 400,
+      body: { errcode: parsed.errcode, error: parsed.error },
+      telemetry: { route: "rejected", status: 400, totalMs: 0, errcode: parsed.errcode },
+    };
+  }
+  const t0 = Date.now();
   try {
     const decision = await handlers.classify(parsed.req);
+    const classifyMs = Date.now() - t0;
     const env =
       decision.route === "actionable"
         ? await handlers.runTask(parsed.req)
         : await handlers.reply(parsed.req);
-    return { status: 200, body: env };
-  } catch {
-    // graceful — never leak a stack/internal error to the caller
-    return { status: 500, body: { errcode: "M_UNKNOWN", error: "the seat failed to handle the turn" } };
+    const m = (env.meta ?? {}) as Record<string, unknown>;
+    return {
+      status: 200,
+      body: env,
+      telemetry: {
+        route: decision.route,
+        status: 200,
+        totalMs: Date.now() - t0,
+        classifyMs,
+        retrievalCount: typeof m.retrievalCount === "number" ? m.retrievalCount : undefined,
+        retrievalMs: typeof m.retrievalMs === "number" ? m.retrievalMs : undefined,
+        genMs: typeof m.genMs === "number" ? m.genMs : undefined,
+        topScore: typeof m.topScore === "number" ? m.topScore : undefined,
+      },
+    };
+  } catch (e) {
+    // graceful — never leak a stack/internal error to the caller, but DO capture the cause for the log
+    // (before this, a 500 was fully opaque — you couldn't tell a model timeout from a palace ACL deny).
+    return {
+      status: 500,
+      body: { errcode: "M_UNKNOWN", error: "the seat failed to handle the turn" },
+      telemetry: {
+        route: "error",
+        status: 500,
+        totalMs: Date.now() - t0,
+        errcode: "M_UNKNOWN",
+        error: (e as Error)?.message ? String((e as Error).message) : String(e),
+      },
+    };
   }
+}
+
+/** One structured, greppable per-turn log line. Timings + retrieval quality; no message/memory CONTENT
+ *  (tenant data stays out of logs) — only counts, scores, and the 500 cause. */
+export function formatTurnLog(t: TurnTelemetry): string {
+  const f = (k: string, v: unknown) => (v === undefined ? "" : ` ${k}=${v}`);
+  return (
+    `seat-turn status=${t.status} route=${t.route} total_ms=${t.totalMs}` +
+    f("classify_ms", t.classifyMs) +
+    f("retrieval_ms", t.retrievalMs) +
+    f("gen_ms", t.genMs) +
+    f("retrieved", t.retrievalCount) +
+    f("top_score", t.topScore) +
+    f("errcode", t.errcode) +
+    (t.error ? ` error=${JSON.stringify(t.error)}` : "")
+  );
 }
 
 // ── RunResult → reply rendering (task path) ───────────────────────────────────────
@@ -218,6 +285,7 @@ export function serveTurn(
     req.on("end", async () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       const out = await handleTurn(req.headers["authorization"], raw, handlers, config);
+      opts.log?.(formatTurnLog(out.telemetry)); // per-turn structured telemetry → stderr → CloudWatch
       send(out.status, out.body);
     });
     req.on("error", () => send(400, { errcode: "M_BAD_REQUEST", error: "read error" }));
