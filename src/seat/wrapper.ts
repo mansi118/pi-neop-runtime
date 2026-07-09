@@ -119,10 +119,12 @@ export interface TurnTelemetry {
   status: number;
   totalMs: number; // classify + reply/task wall time inside handleTurn
   classifyMs?: number;
-  retrievalCount?: number;
+  retrievalCount?: number; // raw hits from palace_search
+  retrievalKept?: number; // survived the relevance gate → actually injected as context
   retrievalMs?: number;
   genMs?: number;
   topScore?: number;
+  minScore?: number; // the active relevance threshold (omitted when the gate is off)
   errcode?: string;
   error?: string; // the CAUSE of a 500 — logged for operators, not returned to the caller
 }
@@ -167,9 +169,11 @@ export async function handleTurn(
         totalMs: Date.now() - t0,
         classifyMs,
         retrievalCount: typeof m.retrievalCount === "number" ? m.retrievalCount : undefined,
+        retrievalKept: typeof m.retrievalKept === "number" ? m.retrievalKept : undefined,
         retrievalMs: typeof m.retrievalMs === "number" ? m.retrievalMs : undefined,
         genMs: typeof m.genMs === "number" ? m.genMs : undefined,
         topScore: typeof m.topScore === "number" ? m.topScore : undefined,
+        minScore: typeof m.minScore === "number" ? m.minScore : undefined,
       },
     };
   } catch (e) {
@@ -199,7 +203,9 @@ export function formatTurnLog(t: TurnTelemetry): string {
     f("retrieval_ms", t.retrievalMs) +
     f("gen_ms", t.genMs) +
     f("retrieved", t.retrievalCount) +
+    f("kept", t.retrievalKept) +
     f("top_score", t.topScore) +
+    f("min_score", t.minScore) +
     f("errcode", t.errcode) +
     (t.error ? ` error=${JSON.stringify(t.error)}` : "")
   );
@@ -242,6 +248,7 @@ export interface LiveHandlerOpts {
   model: ModelBroker;
   memory: MemoryLike; // constructed from env (palaceClientFromEnv) — scope is env-baked, never from payload
   t9Ack: boolean;
+  minScore?: number; // relevance gate for retrieved memory (SEAT_MEMORY_MIN_SCORE); <=0 or unset = off
   now?: () => number;
 }
 
@@ -256,7 +263,7 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
   const now = opts.now ?? (() => Date.now());
   return {
     classify: (req) => classifyAndRoute(req.message, gen),
-    reply: (req) => replySeat(opts.neop, { message: req.message }, { gen, memory: opts.memory }),
+    reply: (req) => replySeat(opts.neop, { message: req.message }, { gen, memory: opts.memory }, { minScore: opts.minScore }),
     // Phase-1 CONTAINMENT: approvals:"deny" — the task plans/verifies but side-effecting steps cannot fire.
     runTask: async (req) =>
       renderRunResult(
