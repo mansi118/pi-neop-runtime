@@ -35,22 +35,41 @@ function renderRetrieval(retrieval: unknown[]): string {
   return retrieval.map((r) => `- ${typeof r === "string" ? r : JSON.stringify(r)}`).join("\n");
 }
 
+/** The relevance score of a single retrieved chunk (`confidence`/`score`/`_score`), or undefined if none. */
+export function chunkScore(r: unknown): number | undefined {
+  if (r && typeof r === "object") {
+    const o = r as Record<string, unknown>;
+    return [o.confidence, o.score, o._score].find((v) => typeof v === "number") as number | undefined;
+  }
+  return undefined;
+}
+
 /**
- * Best relevance score across retrieved chunks (max of `confidence`/`score`/`_score`), for telemetry only.
- * Lets the per-turn log show WHETHER retrieval was actually relevant — palace_search returns nearest
- * neighbours with no threshold, so a low top score on an off-topic query is the signal that the "memory
- * context" fed to the model was weak. Returns undefined if no numeric score is present.
+ * Best relevance score across retrieved chunks, for telemetry. Lets the per-turn log show WHETHER retrieval
+ * was actually relevant — palace_search returns nearest neighbours with no threshold, so a low top score on
+ * an off-topic query is the signal that the "memory context" fed to the model was weak.
  */
 export function topRetrievalScore(retrieval: unknown[]): number | undefined {
   let best: number | undefined;
   for (const r of retrieval ?? []) {
-    if (r && typeof r === "object") {
-      const o = r as Record<string, unknown>;
-      const s = [o.confidence, o.score, o._score].find((v) => typeof v === "number") as number | undefined;
-      if (typeof s === "number" && (best === undefined || s > best)) best = s;
-    }
+    const s = chunkScore(r);
+    if (typeof s === "number" && (best === undefined || s > best)) best = s;
   }
   return best;
+}
+
+/**
+ * Relevance gate: drop chunks whose score is BELOW minScore before they are injected as "memory context".
+ * palace_search returns nearest neighbours with no cutoff, so an off-topic query still gets a weak chunk
+ * stapled to the prompt (the "memory feels irrelevant" symptom). A chunk with NO score is kept (we can't
+ * judge it — never silently drop unscored memory). minScore <= 0 disables the gate (returns input as-is).
+ */
+export function filterByScore(retrieval: unknown[], minScore: number): unknown[] {
+  if (!(minScore > 0)) return retrieval ?? [];
+  return (retrieval ?? []).filter((r) => {
+    const s = chunkScore(r);
+    return s === undefined || s >= minScore;
+  });
 }
 
 /**
@@ -61,11 +80,15 @@ export async function replySeat(
   neop: SeatNeop,
   msg: { message: string },
   deps: { gen: Generate; memory: MemoryLike },
+  opts: { minScore?: number } = {},
 ): Promise<ReplyEnvelope> {
   const tRet = Date.now();
   const ctx = await deps.memory.assembleContext(msg.message); // GAP-1 live retrieval (box-unproven; mocked in tests)
   const retrievalMs = Date.now() - tRet;
-  const user = `${msg.message}\n\n# Memory context\n${renderRetrieval(ctx.retrieval)}`;
+  const raw = ctx.retrieval ?? [];
+  const minScore = opts.minScore ?? 0;
+  const kept = filterByScore(raw, minScore); // relevance gate: weak chunks never reach the prompt
+  const user = `${msg.message}\n\n# Memory context\n${renderRetrieval(kept)}`;
   const tGen = Date.now();
   const text = await deps.gen(neop.rolePrompt, user); // tool-less: a reply, not an action
   const genMs = Date.now() - tGen;
@@ -74,12 +97,15 @@ export async function replySeat(
     text,
     // meta carries per-turn telemetry up to serveTurn's structured log (timings + retrieval quality). The
     // scores make the memory-relevance question observable per turn instead of needing a synthetic probe.
+    // retrievalCount = raw hits; retrievalKept = what actually survived the gate and reached the prompt.
     meta: {
       neopId: neop.neopId,
-      retrievalCount: ctx.retrieval?.length ?? 0,
+      retrievalCount: raw.length,
+      retrievalKept: kept.length,
       retrievalMs,
       genMs,
-      topScore: topRetrievalScore(ctx.retrieval),
+      topScore: topRetrievalScore(raw),
+      minScore: minScore > 0 ? minScore : undefined,
     },
   };
 }

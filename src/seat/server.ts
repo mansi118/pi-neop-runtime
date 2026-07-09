@@ -27,7 +27,12 @@ export interface SeatServerDeps {
  * fails, this throws BEFORE calling any factory, so NO live model/palace connection is established on
  * refusal. (Tests assert the factories are never invoked when t9Ack is false.)
  */
-export function assembleSeatServer(config: WrapperConfig, neopPath: string, deps: SeatServerDeps): SeatHandlers {
+export function assembleSeatServer(
+  config: WrapperConfig,
+  neopPath: string,
+  deps: SeatServerDeps,
+  minScore = 0,
+): SeatHandlers {
   if (!config.t9Ack) {
     throw new Error(
       "REFUSING to assemble the live seat server: this IS the first-real-NEop gate (T9). No live model or " +
@@ -42,18 +47,21 @@ export function assembleSeatServer(config: WrapperConfig, neopPath: string, deps
   const model = deps.makeModel(); // live model connection
   const memory = deps.makeMemory(); // live palace (palaceClientFromEnv — scope baked from env, never payload)
   const neop = deps.loadNeop(neopPath);
-  return makeLiveHandlers({ neopPath, neop, model, memory, t9Ack: config.t9Ack });
+  return makeLiveHandlers({ neopPath, neop, model, memory, t9Ack: config.t9Ack, minScore });
 }
 
 /** The real bootstrap: env → config (fail-closed on blank token) → T9-gated live assembly → node:http server. */
 export function runSeatServer(env: NodeJS.ProcessEnv = process.env): Server {
   const config = assertWrapperConfig(env); // throws on blank FORWARD_TOKEN (fail-closed)
   const neopPath = (env.NEOP_PATH ?? "").trim();
+  // Relevance gate for retrieved memory. Tunable WITHOUT a rebuild (task-def env); default 0 = off so the
+  // deploy is behaviour-neutral until a threshold is chosen from the observed top_score telemetry.
+  const minScore = Number(env.SEAT_MEMORY_MIN_SCORE ?? "0") || 0;
   const handlers = assembleSeatServer(config, neopPath, {
     makeModel: () => new ModelBroker("live"),
     makeMemory: () => new MemoryBroker("live"), // MemoryBroker satisfies MemoryLike; scope from env, fail-closed
     loadNeop: (p) => load(p),
-  });
+  }, minScore);
   const port = Number(env.SEAT_PORT ?? "8090");
   const host = env.SEAT_HOST ?? "127.0.0.1";
   return serveTurn(config, handlers, { port, host, log: (s) => console.error(s) });
