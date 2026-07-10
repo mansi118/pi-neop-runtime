@@ -156,6 +156,29 @@ export function renderRunResult(r: RunResult): ReplyEnvelope {
   return { kind: "task", text: `I couldn't complete that${r.error ? `: ${r.error}` : "."}`, meta };
 }
 
+/**
+ * Task path with graceful degradation. `renderRunResult` already turns every non-DONE *terminal state*
+ * (ESCALATED / FAILED) into a civil message — but a THROW inside the task engine (e.g. a generation-style
+ * ask like "draft an opener" that yields an empty plan) bubbles up to `handleTurn`'s catch and becomes a
+ * 500 ("the seat failed to handle the turn"). That is the task-path-500 the bridge masks with its fallback.
+ *
+ * This wraps the task run so a THROW degrades to the conversational reply path instead: the user gets an
+ * actual answer, never a dead-end error. Pure over injected `runOnce`/`reply` — unit tested, no live model.
+ * Security posture is unchanged: `runOnce` still runs with approvals:"deny"; only the FAILURE mode moves
+ * from "500" to "answer conversationally".
+ */
+export async function runTaskResilient(
+  req: TurnRequest,
+  runOnce: (req: TurnRequest) => Promise<RunResult>,
+  reply: (req: TurnRequest) => Promise<ReplyEnvelope>,
+): Promise<ReplyEnvelope> {
+  try {
+    return renderRunResult(await runOnce(req));
+  } catch {
+    return reply(req); // task engine threw (e.g. empty plan) — degrade to conversation, never a 500
+  }
+}
+
 // ── config (fail-closed on blank token) ───────────────────────────────────────────
 export function assertWrapperConfig(env: NodeJS.ProcessEnv = process.env): WrapperConfig {
   const forwardToken = (env.FORWARD_TOKEN ?? "").trim();
@@ -187,13 +210,17 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
   }
   const gen = modelGenerate(opts.model);
   const now = opts.now ?? (() => Date.now());
+  const reply = (req: TurnRequest) => replySeat(opts.neop, { message: req.message }, { gen, memory: opts.memory });
   return {
     classify: (req) => classifyAndRoute(req.message, gen),
-    reply: (req) => replySeat(opts.neop, { message: req.message }, { gen, memory: opts.memory }),
+    reply,
     // Phase-1 CONTAINMENT: approvals:"deny" — the task plans/verifies but side-effecting steps cannot fire.
-    runTask: async (req) =>
-      renderRunResult(
-        await dispatch(opts.neopPath, buildRunCase({ task: req.message, approvals: "deny" }, now()), "live"),
+    // Resilient: if the task engine throws (empty/failed plan), degrade to a conversational reply, not a 500.
+    runTask: (req) =>
+      runTaskResilient(
+        req,
+        (r) => dispatch(opts.neopPath, buildRunCase({ task: r.message, approvals: "deny" }, now()), "live"),
+        reply,
       ),
   };
 }

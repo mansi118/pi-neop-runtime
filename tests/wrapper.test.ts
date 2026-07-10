@@ -12,6 +12,7 @@ import {
   assertWrapperConfig,
   makeLiveHandlers,
   renderRunResult,
+  runTaskResilient,
   serveTurn,
   type SeatHandlers,
   type TurnRequest,
@@ -158,6 +159,44 @@ describe("renderRunResult — RunResult → reply (Phase-1 containment)", () => 
   it("FAILED → a graceful failure line", () => {
     const env = renderRunResult({ ...base, terminalState: "FAILED", taskOutcomes: [], acceptanceAllPass: false, error: "nope" });
     expect(env.text).toMatch(/couldn't complete/i);
+  });
+});
+
+describe("runTaskResilient — task-engine throw degrades to a reply (the task-path-500 fix)", () => {
+  const base = { runId: "r1", neop: "n", caseId: "c", plan: null, replansPerformed: 0, trace: {} as any };
+  const req: TurnRequest = { message: "draft an opener", conversationId: "!r:s", userId: "", idempotencyKey: "" };
+  const reply = async (r: TurnRequest) => ({ kind: "reply", text: `reply:${r.message}` }) as ReplyEnvelope;
+
+  it("a DONE result renders normally (no fallback)", async () => {
+    const env = await runTaskResilient(
+      req,
+      async () => ({ ...base, terminalState: "DONE", taskOutcomes: [{}] as any, acceptanceAllPass: true }),
+      reply,
+    );
+    expect(env.kind).toBe("task");
+    expect(env.text).toMatch(/Done — completed 1 step/);
+  });
+
+  it("a THROW in the task engine falls back to a conversational reply (was a 500)", async () => {
+    const env = await runTaskResilient(
+      req,
+      async () => {
+        throw new Error("empty plan / task engine blew up");
+      },
+      reply,
+    );
+    expect(env.kind).toBe("reply");
+    expect(env.text).toBe("reply:draft an opener");
+  });
+
+  it("a non-DONE TERMINAL state still renders via renderRunResult (not the fallback)", async () => {
+    const env = await runTaskResilient(
+      req,
+      async () => ({ ...base, terminalState: "ESCALATED", taskOutcomes: [], acceptanceAllPass: false }),
+      reply,
+    );
+    expect(env.kind).toBe("task");
+    expect(env.text).toMatch(/requires approval/i);
   });
 });
 
