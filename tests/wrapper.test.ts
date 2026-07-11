@@ -137,7 +137,8 @@ describe("makeLiveHandlers — the T9 gate", () => {
       makeLiveHandlers({
         neopPath: "x",
         neop: { rolePrompt: "p", neopId: "n" },
-        model: {} as any,
+        fast: {} as any,
+        quality: {} as any,
         memory: {} as any,
         t9Ack: false,
       }),

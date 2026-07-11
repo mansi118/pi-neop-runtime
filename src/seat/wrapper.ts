@@ -22,7 +22,8 @@ import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { classifyAndRoute, type RouteDecision } from "./intent.ts";
 import { modelGenerate } from "./generate.ts";
-import { replySeat, type MemoryLike, type ReplyEnvelope, type SeatNeop } from "./reply.ts";
+import { replyLoop } from "./loop.ts";
+import type { MemoryLike, ReplyEnvelope, SeatNeop } from "./reply.ts";
 import type { ModelBroker } from "../brokers/model.ts";
 import { dispatch } from "../api.ts";
 import { buildRunCase } from "../serve.ts";
@@ -195,7 +196,9 @@ export function assertWrapperConfig(env: NodeJS.ProcessEnv = process.env): Wrapp
 export interface LiveHandlerOpts {
   neopPath: string;
   neop: SeatNeop;
-  model: ModelBroker;
+  // Two-model loop (ML directive 2026-07-10): fast=Haiku (classify/ground/guard), quality=Sonnet (the answer).
+  fast: ModelBroker;
+  quality: ModelBroker;
   memory: MemoryLike; // constructed from env (palaceClientFromEnv) — scope is env-baked, never from payload
   t9Ack: boolean;
   now?: () => number;
@@ -208,11 +211,14 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
         "the box (GAP-2 jail), a live palace (GAP-1), a model key, and A2/B proven. Set NEOP_T9_ACK=yes to acknowledge.",
     );
   }
-  const gen = modelGenerate(opts.model);
+  const genFast = modelGenerate(opts.fast); // Haiku: classify, ground, guard
+  const genQuality = modelGenerate(opts.quality); // Sonnet: the user-facing answer
   const now = opts.now ?? (() => Date.now());
-  const reply = (req: TurnRequest) => replySeat(opts.neop, { message: req.message }, { gen, memory: opts.memory });
+  // Conversational reply now runs the defined loop (GROUND→ANSWER→GUARD) instead of one opaque generation.
+  const reply = (req: TurnRequest) =>
+    replyLoop(opts.neop, { message: req.message }, { fast: genFast, quality: genQuality, memory: opts.memory });
   return {
-    classify: (req) => classifyAndRoute(req.message, gen),
+    classify: (req) => classifyAndRoute(req.message, genFast),
     reply,
     // Phase-1 CONTAINMENT: approvals:"deny" — the task plans/verifies but side-effecting steps cannot fire.
     // Resilient: if the task engine throws (empty/failed plan), degrade to a conversational reply, not a 500.

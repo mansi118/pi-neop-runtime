@@ -118,9 +118,34 @@ describe("ModelBroker live mode — amazon-bedrock provider (Decision 2, sealed 
     b.dispose();
   });
 
-  it("names the error distinctly when NRT_MODEL is an apac profile with no known bare id", () => {
+  it("falls back to the nova shell and stamps an id not in pi-ai's registry (verbatim Converse modelId)", () => {
+    // pi-ai sends model.id verbatim as the Converse modelId and its registry lags new bedrock ids (e.g. newer
+    // Claude profiles). So an unknown id no longer throws here — it rides the nova shell with the id stamped,
+    // and Bedrock itself rejects a truly bogus id at invoke time. This is what lets the Claude ids work.
     process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
     process.env.NRT_MODEL = "apac.amazon.nonesuch-v9:9";
-    expect(() => new ModelBroker("live")).toThrow(/not a known pi-ai bedrock model/);
+    const b = new ModelBroker("live");
+    expect((b.getModel() as any).id).toBe("apac.amazon.nonesuch-v9:9");
+    b.dispose();
+  });
+
+  it("resolves a Claude bedrock profile id (not in the bare registry) by stamping it onto the shell", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    process.env.NRT_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0";
+    const b = new ModelBroker("live");
+    expect((b.getModel() as any).id).toBe("global.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    b.dispose();
+  });
+
+  it("a per-broker modelIdOverride wins over NRT_MODEL, and two brokers do NOT clobber each other's id", () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = "bedrock-api-key-TEST";
+    process.env.NRT_MODEL = "apac.amazon.nova-lite-v1:0";
+    const fast = new ModelBroker("live", "global.anthropic.claude-haiku-4-5-20251001-v1:0");
+    const quality = new ModelBroker("live", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    // The clone in resolveBedrockModel keeps them independent — no shared-registry-object clobber.
+    expect((fast.getModel() as any).id).toBe("global.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect((quality.getModel() as any).id).toBe("global.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    fast.dispose();
+    quality.dispose();
   });
 });

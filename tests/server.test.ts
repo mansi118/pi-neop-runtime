@@ -10,9 +10,13 @@ const cfg = (t9Ack: boolean): WrapperConfig => ({ forwardToken: "TOK", t9Ack });
 
 function recordingDeps(calls: string[]) {
   return {
-    makeModel: () => {
-      calls.push("model");
-      return {} as any; // makeLiveHandlers reads the model lazily; assembly doesn't touch it
+    makeFast: () => {
+      calls.push("fast");
+      return {} as any; // makeLiveHandlers reads the brokers lazily; assembly doesn't touch them
+    },
+    makeQuality: () => {
+      calls.push("quality");
+      return {} as any;
     },
     makeMemory: () => {
       calls.push("memory");
@@ -44,6 +48,6 @@ describe("assembleSeatServer — T9 gate checked BEFORE any live broker is const
     expect(typeof handlers.classify).toBe("function");
     expect(typeof handlers.reply).toBe("function");
     expect(typeof handlers.runTask).toBe("function");
-    expect(calls).toEqual(["model", "memory", "neop:agents/recon"]); // only reached AFTER both gates
+    expect(calls).toEqual(["fast", "quality", "memory", "neop:agents/recon"]); // only reached AFTER both gates
   });
 });
