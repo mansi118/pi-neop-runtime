@@ -17,7 +17,9 @@ import type { MemoryLike, SeatNeop } from "./reply.ts";
 
 /** Injectable live-dep factories — so the T9 refusal is unit-testable WITHOUT constructing live brokers. */
 export interface SeatServerDeps {
-  makeModel: () => ModelBroker;
+  // Two brokers for the Haiku+Sonnet loop: fast (Haiku) drives classify/ground/guard, quality (Sonnet) answers.
+  makeFast: () => ModelBroker;
+  makeQuality: () => ModelBroker;
   makeMemory: () => MemoryLike;
   loadNeop: (path: string) => SeatNeop;
 }
@@ -39,10 +41,11 @@ export function assembleSeatServer(config: WrapperConfig, neopPath: string, deps
     throw new Error("NEOP_PATH is required (the seat's NEop folder, e.g. agents/recon)");
   }
   // Only past BOTH gates do we open anything live:
-  const model = deps.makeModel(); // live model connection
+  const fast = deps.makeFast(); // live Haiku connection
+  const quality = deps.makeQuality(); // live Sonnet connection
   const memory = deps.makeMemory(); // live palace (palaceClientFromEnv — scope baked from env, never payload)
   const neop = deps.loadNeop(neopPath);
-  return makeLiveHandlers({ neopPath, neop, model, memory, t9Ack: config.t9Ack });
+  return makeLiveHandlers({ neopPath, neop, fast, quality, memory, t9Ack: config.t9Ack });
 }
 
 /** The real bootstrap: env → config (fail-closed on blank token) → T9-gated live assembly → node:http server. */
@@ -50,7 +53,11 @@ export function runSeatServer(env: NodeJS.ProcessEnv = process.env): Server {
   const config = assertWrapperConfig(env); // throws on blank FORWARD_TOKEN (fail-closed)
   const neopPath = (env.NEOP_PATH ?? "").trim();
   const handlers = assembleSeatServer(config, neopPath, {
-    makeModel: () => new ModelBroker("live"),
+    // Fast=Haiku, Quality=Sonnet — ids overridable per-seat via env; NRT_MODEL still drives the task path.
+    makeFast: () =>
+      new ModelBroker("live", env.SEAT_MODEL_FAST || "global.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    makeQuality: () =>
+      new ModelBroker("live", env.SEAT_MODEL_QUALITY || "global.anthropic.claude-sonnet-4-5-20250929-v1:0"),
     makeMemory: () => new MemoryBroker("live"), // MemoryBroker satisfies MemoryLike; scope from env, fail-closed
     loadNeop: (p) => load(p),
   });

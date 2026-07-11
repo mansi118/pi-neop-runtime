@@ -60,6 +60,11 @@ const BEDROCK_PROFILE_TO_CATALOG: Record<string, string> = {
   "apac.amazon.nova-micro-v1:0": "amazon.nova-micro-v1:0",
   "apac.amazon.nova-pro-v1:0": "amazon.nova-pro-v1:0",
   "apac.amazon.nova-2-lite-v1:0": "amazon.nova-2-lite-v1:0",
+  // Anthropic Claude on Bedrock (unblocked 2026-07-10). Profile ↔ bare catalog id. Newer Claude ids may
+  // not be in pi-ai's registry — resolveBedrockModel falls back to a known shell + stamps the profile.
+  "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "global.anthropic.claude-haiku-4-5-20251001-v1:0": "anthropic.claude-haiku-4-5-20251001-v1:0",
+  "apac.anthropic.claude-3-5-sonnet-20241022-v2:0": "anthropic.claude-3-5-sonnet-20241022-v2:0",
 };
 // The spine region. The bearer token is region-scoped — a us-east-1 token 403s against ap-south-1 (proven
 // 2026-07-07) — so we pin this if the operator hasn't set AWS_REGION. Override via NRT_BEDROCK_REGION.
@@ -74,9 +79,13 @@ export class ModelBroker {
   private fauxReg?: ReturnType<typeof registerFauxProvider>;
   private model: Model<any>;
   private provider: string = DEFAULT_PROVIDER;
+  private modelIdOverride?: string;
 
-  constructor(mode: Mode) {
+  // modelIdOverride lets two brokers on the SAME provider run different models (the Haiku fast tier vs the
+  // Sonnet quality tier) without fighting over the single process-wide NRT_MODEL env. It wins over NRT_MODEL.
+  constructor(mode: Mode, modelIdOverride?: string) {
     this.mode = mode;
+    this.modelIdOverride = modelIdOverride;
     if (mode === "unit") {
       const id = `faux-neop-${FAUX_SEQ++}`;
       this.fauxReg = registerFauxProvider({ api: id, provider: id, models: [{ id: "faux-1" }] });
@@ -177,7 +186,7 @@ export class ModelBroker {
         `live mode (${provider}) requires ${keyEnv}. Set it (env or .env) and re-run. Unit mode needs no key.`,
       );
     }
-    const wanted = process.env.NRT_MODEL || DEFAULT_MODEL[provider];
+    const wanted = this.modelIdOverride || process.env.NRT_MODEL || DEFAULT_MODEL[provider];
     if (provider === "amazon-bedrock") return this.resolveBedrockModel(wanted);
     const model = registryGetModel(provider as any, wanted as any) as Model<any>;
     if (!model) {
@@ -210,18 +219,25 @@ export class ModelBroker {
     process.env.AWS_REGION = region;
     process.env.AWS_DEFAULT_REGION = region;
 
-    // Fetch the Model shell by its BARE catalog id (keeps pricing/capability metadata), then send the profile.
+    // Fetch the Model shell by its BARE catalog id (keeps pricing/capability metadata). Newer Claude bedrock
+    // ids may not be in pi-ai's registry yet — pi-ai sends model.id verbatim as the Converse modelId, so the
+    // shell is only a carrier: fall back to the always-present nova-lite shell and stamp the wanted id onto it.
     const catalogId = BEDROCK_PROFILE_TO_CATALOG[wanted] ?? wanted;
-    const model = registryGetModel("amazon-bedrock" as any, catalogId as any) as Model<any>;
-    if (!model) {
+    const shell =
+      (registryGetModel("amazon-bedrock" as any, catalogId as any) as Model<any>) ??
+      (registryGetModel("amazon-bedrock" as any, "amazon.nova-lite-v1:0" as any) as Model<any>);
+    if (!shell) {
       const known = Object.keys(BEDROCK_PROFILE_TO_CATALOG).join(", ");
       throw new Error(
-        `live mode (amazon-bedrock): bare id '${catalogId}' is not a known pi-ai bedrock model ` +
+        `live mode (amazon-bedrock): could not resolve a bedrock model shell for '${catalogId}' ` +
           `(derived from NRT_MODEL='${wanted}'). Set NRT_MODEL to one of: ${known}.`,
       );
     }
-    // Stamp the regional inference-profile id so the Converse request targets apac.* (bare rejects on-demand).
-    if (wanted !== catalogId) (model as any).id = wanted;
+    // CLONE before stamping: the registry returns a SHARED Model object. Two brokers (fast + quality) resolving
+    // bedrock would otherwise stamp the same instance and clobber each other's id. Clone keeps them independent.
+    const model = Object.assign(Object.create(Object.getPrototypeOf(shell)), shell) as Model<any>;
+    // Stamp the regional inference-profile id so the Converse request targets apac.*/global.* (bare rejects).
+    (model as any).id = wanted;
     return model;
   }
 }
