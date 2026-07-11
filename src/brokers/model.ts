@@ -60,6 +60,11 @@ const BEDROCK_PROFILE_TO_CATALOG: Record<string, string> = {
   "apac.amazon.nova-micro-v1:0": "amazon.nova-micro-v1:0",
   "apac.amazon.nova-pro-v1:0": "amazon.nova-pro-v1:0",
   "apac.amazon.nova-2-lite-v1:0": "amazon.nova-2-lite-v1:0",
+  // Anthropic Claude on Bedrock (unblocked 2026-07-10). Profile ↔ bare catalog id. Newer Claude ids may
+  // not be in pi-ai's registry — resolveBedrockModel falls back to a known shell + stamps the profile.
+  "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "global.anthropic.claude-haiku-4-5-20251001-v1:0": "anthropic.claude-haiku-4-5-20251001-v1:0",
+  "apac.anthropic.claude-3-5-sonnet-20241022-v2:0": "anthropic.claude-3-5-sonnet-20241022-v2:0",
 };
 // The spine region. The bearer token is region-scoped — a us-east-1 token 403s against ap-south-1 (proven
 // 2026-07-07) — so we pin this if the operator hasn't set AWS_REGION. Override via NRT_BEDROCK_REGION.
