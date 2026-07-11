@@ -18,6 +18,11 @@ The doc's **supervisor** owns the deterministic plan→execute→verify DAG and 
 lifecycle state machine; each phase **delegates to a genuine `pi` agent loop**, so
 the agents you test here are running on the same harness that ships them.
 
+**Docs:** [`docs/SEAT_MODEL_LOOP.md`](docs/SEAT_MODEL_LOOP.md) — the seat's two-model
+reply loop (Haiku ground/guard + Sonnet answer) and **how a model is added/routed
+through the codebase** (worked example). [`docs/JAIL.md`](docs/JAIL.md) — runtime
+isolation (GAP-2).
+
 ---
 
 ## Why on top of pi
