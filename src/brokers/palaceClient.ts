@@ -26,7 +26,11 @@ import { createPrivateKey, createPublicKey, sign as edSign, type KeyObject } fro
 import { readFileSync } from "node:fs";
 
 // ── allowlist + guards (mirror palace_mcp_shim) ────────────────────────────────
-export const ALLOWED_TOOLS_BASE = new Set<string>(["palace_search", "palace_remember"]);
+// palace_put_run_event: the seat's OWN-scope append to the INTERIM fidelity run_events store (Track 3,
+// Mempalace #31). Own-seat write, server-gated (remember) — the same posture as palace_remember, so it
+// belongs in the base allowlist. The event payload is data (no scope/envelope keys — FORBIDDEN_ARG_KEYS
+// still rejects any palaceId/neopId/tool/params the caller tries to smuggle in).
+export const ALLOWED_TOOLS_BASE = new Set<string>(["palace_search", "palace_remember", "palace_put_run_event"]);
 export const GATED_TOOLS = new Set<string>(["palace_get_closet"]); // not registered until Mempalace T8
 export const FORBIDDEN_ARG_KEYS = new Set<string>(["palaceId", "neopId", "tool", "params"]);
 export const RESERVED_IDENTITIES = new Set<string>(["_admin", "_system"]);

@@ -66,4 +66,25 @@ export class MemoryBroker {
     }
     this.writes.push(record);
   }
+
+  /**
+   * Append a HUMAN-VERDICT run-event to the INTERIM fidelity store (Track 3) under the seat's OWN baked
+   * scope (palace_put_run_event, kind="human_verdict"). This is the in-VPC persistence hop for a
+   * Decision-Queue verdict the bridge forwards — scope is env-baked by the PalaceClient, never the
+   * caller's. Unit mode records to `writes` (offline-gradeable); live mode calls the palace and throws
+   * loudly on a non-ok response (a swallowed verdict would silently starve the fidelity clock).
+   */
+  async recordVerdict(event: Record<string, unknown>): Promise<void> {
+    if (this.mode !== "live") {
+      this.writes.push({ kind: "human_verdict", event });
+      return;
+    }
+    const r = await this.client!.call("palace_put_run_event", { kind: "human_verdict", event });
+    if (!r.ok) {
+      throw new Error(
+        `palace_put_run_event failed: http ${r.httpStatus} ${JSON.stringify(r.response).slice(0, 240)}`,
+      );
+    }
+    this.writes.push({ kind: "human_verdict", event });
+  }
 }
