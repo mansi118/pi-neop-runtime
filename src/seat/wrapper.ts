@@ -23,6 +23,7 @@ import http from "node:http";
 import { classifyAndRoute, type RouteDecision } from "./intent.ts";
 import { modelGenerate } from "./generate.ts";
 import { replyLoop } from "./loop.ts";
+import { makeVerdictHandler, type VerdictSink } from "./verdict.ts";
 import type { MemoryLike, ReplyEnvelope, SeatNeop } from "./reply.ts";
 import type { ModelBroker } from "../brokers/model.ts";
 import { dispatch } from "../api.ts";
@@ -41,11 +42,14 @@ export interface WrapperConfig {
   t9Ack: boolean;
 }
 
-/** The three routing branches — injectable so `handleTurn` tests need no live model/network. */
+/** The routing branches — injectable so `handleTurn` tests need no live model/network. `verdict` is the
+ * POST /seat/verdict handler (Decision-Queue approve/reject → palace run_events); optional so a
+ * transport built without a verdict sink simply 404s that path. */
 export interface SeatHandlers {
   classify: (req: TurnRequest) => Promise<RouteDecision>;
   reply: (req: TurnRequest) => Promise<ReplyEnvelope>;
   runTask: (req: TurnRequest) => Promise<ReplyEnvelope>;
+  verdict?: (rawBody: string) => Promise<{ status: number; body: unknown }>;
 }
 
 // Keys the caller must NEVER supply — scope is server-baked from env. Present in body ⇒ reject loudly.
@@ -220,6 +224,9 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
   return {
     classify: (req) => classifyAndRoute(req.message, genFast),
     reply,
+    // POST /seat/verdict: persist a Decision-Queue approve/reject under THIS seat's env-baked scope
+    // (the in-VPC hop for the human-verdict fidelity signal). opts.memory is the live MemoryBroker.
+    verdict: makeVerdictHandler({ memory: opts.memory as VerdictSink, neopId: opts.neop.neopId }),
     // Phase-1 CONTAINMENT: approvals:"deny" — the task plans/verifies but side-effecting steps cannot fire.
     // Resilient: if the task engine throws (empty/failed plan), degrade to a conversational reply, not a 500.
     runTask: (req) =>
@@ -243,20 +250,33 @@ export function serveTurn(
       res.writeHead(status, { "Content-Type": "application/json", "Content-Length": data.length });
       res.end(data);
     };
-    if (req.method !== "POST" || (req.url ?? "").split("?")[0] !== "/seat/turn") {
-      return send(404, { errcode: "M_UNRECOGNIZED", error: "POST /seat/turn only" });
+    const path = (req.url ?? "").split("?")[0];
+    if (req.method !== "POST" || (path !== "/seat/turn" && path !== "/seat/verdict")) {
+      return send(404, { errcode: "M_UNRECOGNIZED", error: "POST /seat/turn or /seat/verdict only" });
     }
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c as Buffer));
     req.on("end", async () => {
       const raw = Buffer.concat(chunks).toString("utf8");
-      const out = await handleTurn(req.headers["authorization"], raw, handlers, config);
+      const auth = req.headers["authorization"];
+      if (path === "/seat/verdict") {
+        // Same shared-secret gate as /seat/turn (the bridge presents FORWARD_TOKEN). Auth FIRST, then persist.
+        if (!authOk(auth, config.forwardToken)) {
+          return send(403, { errcode: "M_FORBIDDEN", error: "bad or missing forward token" });
+        }
+        if (!handlers.verdict) {
+          return send(404, { errcode: "M_UNRECOGNIZED", error: "verdict not supported by this seat" });
+        }
+        const out = await handlers.verdict(raw);
+        return send(out.status, out.body);
+      }
+      const out = await handleTurn(auth, raw, handlers, config);
       send(out.status, out.body);
     });
     req.on("error", () => send(400, { errcode: "M_BAD_REQUEST", error: "read error" }));
   });
   server.listen(opts.port, opts.host ?? "127.0.0.1", () =>
-    opts.log?.(`seat wrapper listening on ${opts.host ?? "127.0.0.1"}:${opts.port} (POST /seat/turn)`),
+    opts.log?.(`seat wrapper listening on ${opts.host ?? "127.0.0.1"}:${opts.port} (POST /seat/turn · /seat/verdict)`),
   );
   return server;
 }
