@@ -24,6 +24,7 @@ import { classifyAndRoute, type RouteDecision } from "./intent.ts";
 import { modelGenerate } from "./generate.ts";
 import { replyLoop } from "./loop.ts";
 import { makeVerdictHandler, type VerdictSink } from "./verdict.ts";
+import { makeWriteTrigger, type TriggerSink, type CandidateExtractor } from "./writeTrigger.ts";
 import type { MemoryLike, ReplyEnvelope, SeatNeop } from "./reply.ts";
 import type { ModelBroker } from "../brokers/model.ts";
 import { dispatch } from "../api.ts";
@@ -206,6 +207,9 @@ export interface LiveHandlerOpts {
   memory: MemoryLike; // constructed from env (palaceClientFromEnv) — scope is env-baked, never from payload
   t9Ack: boolean;
   now?: () => number;
+  // Track 3 write-trigger: extract a memory candidate from a turn (default none — no fabricated confidence).
+  extractCandidate?: CandidateExtractor;
+  log?: (msg: string) => void;
 }
 
 export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
@@ -218,9 +222,24 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
   const genFast = modelGenerate(opts.fast); // Haiku: classify, ground, guard
   const genQuality = modelGenerate(opts.quality); // Sonnet: the user-facing answer
   const now = opts.now ?? (() => Date.now());
+  // Track 3 write-trigger: persist a shadow_prediction (+ optional memory_candidate) per completed reply.
+  // BEST-EFFORT — fired after the envelope is ready, never awaited into the response, never throws.
+  const trigger = makeWriteTrigger({
+    sink: opts.memory as TriggerSink,
+    neopId: opts.neop.neopId,
+    extract: opts.extractCandidate,
+    log: opts.log,
+  });
   // Conversational reply now runs the defined loop (GROUND→ANSWER→GUARD) instead of one opaque generation.
-  const reply = (req: TurnRequest) =>
-    replyLoop(opts.neop, { message: req.message }, { fast: genFast, quality: genQuality, memory: opts.memory });
+  const reply = async (req: TurnRequest): Promise<ReplyEnvelope> => {
+    const env = await replyLoop(
+      opts.neop,
+      { message: req.message },
+      { fast: genFast, quality: genQuality, memory: opts.memory },
+    );
+    void trigger(req, env); // non-blocking telemetry; onTurn swallows its own errors
+    return env;
+  };
   return {
     classify: (req) => classifyAndRoute(req.message, genFast),
     reply,

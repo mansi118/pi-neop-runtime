@@ -75,16 +75,40 @@ export class MemoryBroker {
    * loudly on a non-ok response (a swallowed verdict would silently starve the fidelity clock).
    */
   async recordVerdict(event: Record<string, unknown>): Promise<void> {
+    return this.putRunEvent("human_verdict", event);
+  }
+
+  /**
+   * Append a SHADOW-PREDICTION run-event (kind="shadow_prediction") — the NEop's predicted reply for a
+   * turn, which the fidelity runner grades against the eventual actual/verdict. Track 3 write-trigger.
+   */
+  async recordShadowPrediction(event: Record<string, unknown>): Promise<void> {
+    return this.putRunEvent("shadow_prediction", event);
+  }
+
+  /**
+   * Append a MEMORY-CANDIDATE run-event (kind="memory_candidate") — a durable-fact candidate the vault
+   * runner reads via load_candidates and runs through the VL-1..5 gates. Track 3 write-trigger.
+   */
+  async recordCandidate(event: Record<string, unknown>): Promise<void> {
+    return this.putRunEvent("memory_candidate", event);
+  }
+
+  /**
+   * The shared run_events append (own env-baked scope, throw-loud on a non-ok palace write — a swallowed
+   * run-event silently starves the fidelity/vault loops). Unit mode records to `writes` (offline-gradeable).
+   */
+  private async putRunEvent(kind: string, event: Record<string, unknown>): Promise<void> {
     if (this.mode !== "live") {
-      this.writes.push({ kind: "human_verdict", event });
+      this.writes.push({ kind, event });
       return;
     }
-    const r = await this.client!.call("palace_put_run_event", { kind: "human_verdict", event });
+    const r = await this.client!.call("palace_put_run_event", { kind, event });
     if (!r.ok) {
       throw new Error(
         `palace_put_run_event failed: http ${r.httpStatus} ${JSON.stringify(r.response).slice(0, 240)}`,
       );
     }
-    this.writes.push({ kind: "human_verdict", event });
+    this.writes.push({ kind, event });
   }
 }
