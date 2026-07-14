@@ -42,11 +42,13 @@ export interface Candidate {
   authorId?: string; // provenance.author_id
 }
 
-/** Decide whether a turn yields a memory candidate. Default is none — we never guess a confidence. */
+/** Decide whether a turn yields a memory candidate. Default is none — we never guess a confidence. May be
+ * async (a model-backed extractor makes a generation call). Runs inside the best-effort trigger, so it
+ * never blocks the reply and a throw/timeout is swallowed. */
 export type CandidateExtractor = (
   req: TurnRequest,
   env: ReplyEnvelope,
-) => Candidate | null | undefined;
+) => Candidate | null | undefined | Promise<Candidate | null | undefined>;
 
 export interface WriteTriggerOpts {
   sink: TriggerSink;
@@ -119,7 +121,7 @@ export function makeWriteTrigger(opts: WriteTriggerOpts) {
     if (opts.extract && opts.sink.recordCandidate) {
       let cand: Candidate | null | undefined;
       try {
-        cand = opts.extract(req, env);
+        cand = await opts.extract(req, env);
       } catch (e) {
         log(`write-trigger: extractor threw (non-fatal): ${errMsg(e)}`);
         cand = null;

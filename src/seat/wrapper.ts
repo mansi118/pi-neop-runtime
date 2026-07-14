@@ -25,6 +25,7 @@ import { modelGenerate } from "./generate.ts";
 import { replyLoop } from "./loop.ts";
 import { makeVerdictHandler, type VerdictSink } from "./verdict.ts";
 import { makeWriteTrigger, type TriggerSink, type CandidateExtractor } from "./writeTrigger.ts";
+import { makeHaikuExtractor } from "./candidateExtractor.ts";
 import type { MemoryLike, ReplyEnvelope, SeatNeop } from "./reply.ts";
 import type { ModelBroker } from "../brokers/model.ts";
 import { dispatch } from "../api.ts";
@@ -208,7 +209,10 @@ export interface LiveHandlerOpts {
   t9Ack: boolean;
   now?: () => number;
   // Track 3 write-trigger: extract a memory candidate from a turn (default none — no fabricated confidence).
+  // Provide an explicit extractor, OR set enableCandidateExtraction to build the default Haiku extractor
+  // from the fast tier (a per-turn model call — opt-in, backgrounded, best-effort).
   extractCandidate?: CandidateExtractor;
+  enableCandidateExtraction?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -223,11 +227,14 @@ export function makeLiveHandlers(opts: LiveHandlerOpts): SeatHandlers {
   const genQuality = modelGenerate(opts.quality); // Sonnet: the user-facing answer
   const now = opts.now ?? (() => Date.now());
   // Track 3 write-trigger: persist a shadow_prediction (+ optional memory_candidate) per completed reply.
-  // BEST-EFFORT — fired after the envelope is ready, never awaited into the response, never throws.
+  // BEST-EFFORT — fired after the envelope is ready, never awaited into the response, never throws. An
+  // explicit extractor wins; else enableCandidateExtraction builds the default Haiku extractor from `fast`.
+  const extract =
+    opts.extractCandidate ?? (opts.enableCandidateExtraction ? makeHaikuExtractor(genFast) : undefined);
   const trigger = makeWriteTrigger({
     sink: opts.memory as TriggerSink,
     neopId: opts.neop.neopId,
-    extract: opts.extractCandidate,
+    extract,
     log: opts.log,
   });
   // Conversational reply now runs the defined loop (GROUND→ANSWER→GUARD) instead of one opaque generation.

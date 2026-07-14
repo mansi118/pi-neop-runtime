@@ -22,6 +22,8 @@ export interface SeatServerDeps {
   makeQuality: () => ModelBroker;
   makeMemory: () => MemoryLike;
   loadNeop: (path: string) => SeatNeop;
+  // Track 3: opt-in per-turn candidate extraction (a Haiku call feeding the vault loop). Off by default.
+  enableCandidateExtraction?: boolean;
 }
 
 /**
@@ -45,7 +47,10 @@ export function assembleSeatServer(config: WrapperConfig, neopPath: string, deps
   const quality = deps.makeQuality(); // live Sonnet connection
   const memory = deps.makeMemory(); // live palace (palaceClientFromEnv — scope baked from env, never payload)
   const neop = deps.loadNeop(neopPath);
-  return makeLiveHandlers({ neopPath, neop, fast, quality, memory, t9Ack: config.t9Ack });
+  return makeLiveHandlers({
+    neopPath, neop, fast, quality, memory, t9Ack: config.t9Ack,
+    enableCandidateExtraction: deps.enableCandidateExtraction, // Track 3: opt-in per-turn extraction
+  });
 }
 
 /** The real bootstrap: env → config (fail-closed on blank token) → T9-gated live assembly → node:http server. */
@@ -59,6 +64,7 @@ export function runSeatServer(env: NodeJS.ProcessEnv = process.env): Server {
     makeQuality: () =>
       new ModelBroker("live", env.SEAT_MODEL_QUALITY || "global.anthropic.claude-sonnet-4-5-20250929-v1:0"),
     makeMemory: () => new MemoryBroker("live"), // MemoryBroker satisfies MemoryLike; scope from env, fail-closed
+    enableCandidateExtraction: (env.ENABLE_CANDIDATE_EXTRACTION ?? "").trim() === "true",
     loadNeop: (p) => load(p),
   });
   const port = Number(env.SEAT_PORT ?? "8090");
