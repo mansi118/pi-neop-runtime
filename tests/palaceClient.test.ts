@@ -93,6 +93,28 @@ describe("Ed25519 signing (forward-looking, optional)", () => {
     expect(Buffer.from(s.publicKeyB64, "base64")).toHaveLength(32);
     expect(s.sign(Buffer.from("msg"))).toMatch(/^[A-Za-z0-9+/]+=*$/);
   });
+
+  it("adds X-NEop-Identity (the Gate-D claim the palace verifies) only when signed", () => {
+    process.env.__TEST_SEED = randomBytes(32).toString("base64");
+    const signed = new PalaceClient({ ...BASE, signingKeyRef: "env:__TEST_SEED" });
+    expect(signed.buildRequest("palace_search", { query: "q" }).headers["X-NEop-Identity"])
+      .toMatch(/^[A-Za-z0-9+/]+=*$/);
+    delete process.env.__TEST_SEED;
+    expect(new PalaceClient(BASE).buildRequest("palace_search").headers["X-NEop-Identity"]).toBeUndefined();
+  });
+
+  it("CROSS-LANGUAGE: the Node identity claim matches the palace's fixed verify vector byte-for-byte", () => {
+    // seed = bytes(0..31); this is the EXACT vector Mempalace tests/edgeIdentity.test.ts verifies, and the
+    // Python shim produces. Ed25519 is deterministic, so Node sign === Python sign === palace verify.
+    const seed = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+    process.env.__TEST_SEED = seed.toString("base64");
+    const c = new PalaceClient({ ...BASE, palaceId: "pal_test", neopId: "aria", signingKeyRef: "env:__TEST_SEED" });
+    const { headers } = c.buildRequest("palace_search", { query: "x" });
+    expect(headers["X-NEop-Pubkey"]).toBe("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=");
+    expect(headers["X-NEop-Identity"]).toBe(
+      "/QKBfUDTsIG8MGnxRjDoV0llplcaXfZVCmsHkCLYjrWq/DBgBdnekrzOcJEV2ay1spjutAmdXEH4TiH0hbh5Aw==");
+    delete process.env.__TEST_SEED;
+  });
 });
 
 describe("call() envelope parsing", () => {
