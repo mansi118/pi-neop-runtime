@@ -97,6 +97,16 @@ export function canonicalJson(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(canonicalize(body)), "utf8");
 }
 
+/**
+ * The Gate-D identity claim the palace VERIFIES (Mempalace convex/access/edgeIdentity.ts): the env-baked
+ * (palaceId, neopId) + tool, newline-joined. Byte-identical to the Python shim's `_identity_claim` so the
+ * palace reconstructs the exact bytes in JS with zero Python↔JS JSON drift (all three are all-string,
+ * non-model fields). This — NOT the JSON body signature — is what closes the `_admin` spoof foot-gun.
+ */
+export function identityClaim(palaceId: string, neopId: string, tool: string): Buffer {
+  return Buffer.from(`${palaceId}\n${neopId}\n${tool}`, "utf8");
+}
+
 // ── transport (injectable for tests) ───────────────────────────────────────────
 export type Transport = (
   url: string,
@@ -176,8 +186,11 @@ export class PalaceClient {
       "X-Palace-Neop": this.neopId,
     };
     if (this.signer) {
-      headers["X-NEop-Signature"] = this.signer.sign(canonicalJson(body));
-      headers["X-NEop-Pubkey"] = this.signer.publicKeyB64; // not verified by /mcp yet (Gate D)
+      headers["X-NEop-Signature"] = this.signer.sign(canonicalJson(body)); // body integrity (forward-looking)
+      headers["X-NEop-Pubkey"] = this.signer.publicKeyB64;
+      // Gate D: the claim the palace verifies (edgeIdentity.decideIdentity) — signed over (palaceId,
+      // neopId, tool) so it reconstructs byte-for-byte server-side. Load-bearing once enable_bridge_identity.
+      headers["X-NEop-Identity"] = this.signer.sign(identityClaim(this.palaceId, this.neopId, name));
     }
     return { body, headers };
   }
